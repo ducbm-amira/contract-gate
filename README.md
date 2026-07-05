@@ -1,105 +1,113 @@
 # contract-gate
 
-Pre-coding **contract gates** that fight vibe-code bugs by enforcing the
-discipline **understand → contract (bịt chỗ mù) → verify** *before* code is
-written. Each gate is a tiny, stdlib-only Python CLI with a hard verdict
-(`pass`/`fail`, exit `0`/`1`) — designed to bolt into the `pinrich-cycle`
-lifecycle as a runnable block, not an advisory checklist that gets skipped when
-rushed.
+**A project-agnostic pre-coding contract gate.** It enforces the discipline
+**understand → contract → verify** *before* code is written — so an AI coding
+agent (or a human in a hurry) can't amplify an ambiguous input into
+confident-but-wrong code.
 
-Background & rationale: vibe-coding amplifies ambiguous input into confident,
-wrong code. A gate can't bake *understanding* (the human part) — it can only
-force the **process + guardrail**: mark the line "pre-coding is sufficient → go
-code", guarding against both under-prep (bugs) and over-prep (paralysis).
+Point it at a repo; it discovers your contract files, runs every applicable
+gate, and returns one verdict + exit code. Drop it into CI, a pre-commit hook,
+or an agent's pre-BUILD step.
 
-## Why standalone (and how it relates to port-harness)
+```bash
+contract-gate check .        # exit 0 = all contracts sound, exit 1 = a gap
+```
 
-The pre-existing gates that already ship inside `pinrich-cycle` —
-`manifest_gate`, `greenfield_gate`, `coverage_gate`, `characterize*` — live in
-`port-harness/` (synced via the `my-claude-skill` repo) and stay there. This
-repo is the **canonical home for the NEW delta gates** the contract-gate work
-adds on top (see the build plan). Each new gate is authored and tested here,
-then a deployed copy is dropped into `port-harness/` so the wired cycle and the
-cross-machine sync keep working. Same design language as the siblings on
-purpose: stdlib-only, format-forgiving pipe-table parser, no regex / no network,
-`pass`/`fail` + exit `0`/`1`.
+## Why this exists (and how it differs from the linters)
+
+Tools like [agnix](https://github.com/agent-sh/agnix) and
+[ctxlint](https://github.com/ctxlint/Ctxlint) answer *"is my config file
+well-formed?"* — they lint `CLAUDE.md` / `AGENTS.md` / `SKILL.md`.
+
+`contract-gate` answers a different question: **"did you actually understand
+the problem before you started coding?"** It gates the *pre-coding contract*
+(what data binds where, what the observable oracle is, which blind spots are
+resolved) — the layer where migration and vibe-code bugs hide (a field wired to
+the wrong source, a null that crashes the render, a spec section nobody pinned
+down). No config linter checks that.
+
+The discipline can't bake *understanding* (that's the human/agent part) — it
+bakes the **guardrail**: a runnable line that says "pre-coding is sufficient →
+go code", protecting against both under-prep (bugs) and over-prep (paralysis).
+
+## Install
+
+```bash
+pipx install git+https://github.com/ducbm-amira/contract-gate   # (PyPI: planned)
+# or, no install:
+python3 -m contract_gate.cli check .
+```
+
+Zero runtime dependencies — the gates are Python-stdlib-only, so it runs under a
+bare `python3` in any CI with no build chain.
+
+## Quickstart
+
+```bash
+contract-gate init .          # scaffold example.<gate>.contract.md templates
+$EDITOR example.data-binding.contract.md   # fill in the blind spots
+contract-gate check .         # gate them
+```
+
+`check` autodiscovers files named `*.contract.md` / `*.databinding.md` (and a
+few conventional variants), runs every gate that *owns* the file (a gate skips
+files it doesn't recognize — it never fails someone else's contract), and prints
+a unified pass/fail with a one-line reason per contract. Exit `1` if any gate
+fails, `0` otherwise. `--format json` for machine output.
 
 ## Gates
 
-| # | Gate | Requirement | Status |
-|---|------|-------------|--------|
-| **4** | **`gates/data_binding_gate.py`** — Screen × Element data-binding map + gate | R4 | ✅ built + tested (22 cases) |
-| 2 | GAP-QA structure validator | R2 | ⏳ next |
-| 1 / 3 / 5 / 6 | task-type detector · 7-lens gate · golden-record harness · spec-table→test-gen | R1/R3/R5 | deferred (see docs) |
+| Gate | Question it gates | Status |
+|------|-------------------|--------|
+| **`data-binding`** | Does every DATA element declare a source + null/empty handling? | ✅ shipped |
+| `manifest` | Does a port have a Legacy Behavior Manifest with an observable per behavior? | 🔜 porting in |
+| `greenfield` | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable)? | 🔜 porting in |
+| `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
+| *generator* | AI-draft the contract from a spec/design/PR so adoption isn't "write homework first" | ⏳ the adoption unlock |
 
-Priority order and the "already-have vs delta" map are in
-[`docs/TOOL-REQUIREMENTS.md`](docs/TOOL-REQUIREMENTS.md). Build #4 + #2 first
-(highest value, medium effort); defer #5/#6.
+### `data-binding` — the shipped gate
 
-## #4 — data-binding gate
+A markdown table (Screen × Element × {type; source; format; null}). Only rows
+you classify (or leave unclassified) as **data** are gated:
 
-Closes the layer `manifest_gate` (port oracle) and `greenfield_gate` (2-layer
-design+spec oracle) both miss: the **data-binding layer** (R4). Every UI element
-that shows DATA must declare **where the data comes from** and **how null/empty
-is handled** — *before* build. That's exactly where UI/migration bugs hide (a
-`sale_` field wired to the wrong column; a LAND record whose price is null
-crashing the render; a half-ported 0-usage field). qa-verify and
-design-fidelity are both blind to a wrong-source binding: the screen renders
-*something*, just the wrong thing.
+1. every data element must declare a non-empty **source** (`ô data chưa ghi
+   nguồn = chưa cho build`);
+2. the map must **track null/empty handling** for data, and each data row fills
+   it (a null nobody thought about is the #1 migration crash);
+3. **format** is required only if you add a format column (optional to track).
 
-**Input** — a markdown table (Screen × Element × {type; source; format; null}).
-A table qualifies when its header has both a **type/kind** column and a
-**source/nguồn** column. Multiple per-screen tables are all evaluated; an
-optional `<!-- data-binding:start --> … <!-- data-binding:end -->` delimiter
-restricts the scan.
+Static rows (title/label/image/icon/action/state) are skipped; an unknown type
+is treated as data (a false PASS defeats the gate; a false FAIL just costs a
+relabel). `N/A` is a filled, considered value; `?`/`TODO`/`-` count as unfilled.
+Live example: [`examples/DATA-BINDING.md`](examples/DATA-BINDING.md).
 
-**The gate** (only the 3 highest-value rules — nothing more, per DP1):
+## Use in CI
 
-1. every **data**-typed element must declare a non-empty **source** (R4's
-   literal gate: *ô data chưa ghi nguồn = chưa cho build*);
-2. the map **must track null/empty handling** for data, and each data row fills
-   it (LAND-null is the #1 migration bug);
-3. **format** is required only if you added a format column (optional to track).
-
-Static rows (title/label/image/icon/action/state) are skipped. An **unknown
-type is treated as data** — a false PASS defeats the gate; a false FAIL only
-costs a relabel.
-
-`N/A` is a filled, considered value (not a placeholder); `?`/`TODO`/`TBD`/`-`
-count as unfilled.
-
-### Run
-
-```bash
-python3 gates/data_binding_gate.py --map <path/to/data-binding.md>
-# or, resolving <repo>/.port/<task>.databinding.md:
-python3 gates/data_binding_gate.py --repo <target-repo> --task <task>
+```yaml
+- run: pipx run contract-gate check .   # fails the job on exit 1
 ```
 
-`pass <summary>` + exit 0, or `fail <one-line reason naming the element>` +
-exit 1. A live example map is
-[`examples/DATA-BINDING.md`](examples/DATA-BINDING.md) (the 売却活動報告書
-sandbox, passes green).
+## Add a gate
 
-### Test
+A gate is one module in `contract_gate/gates/` exposing a small descriptor —
+`KEY`, `TITLE`, `GLOBS`, `applies(text) -> bool`, `evaluate(text) -> (ok, reason)`,
+and a `TEMPLATE` string — then one line in `gates/__init__.py::REGISTRY`. See
+[`contract_gate/gates/data_binding.py`](contract_gate/gates/data_binding.py) as
+the reference. Keep it stdlib-only and format-forgiving (no regex, no network).
 
-```bash
-python3 -m unittest gates/data_binding_gate_test.py -v
-```
+## Design principles
 
-## Design principles (constraints — fight SDD's own trap)
-
-- **DP1** — spec only the blind spots, not everything (80% of a screen is
-  obvious; over-spec = form-cứng + doc bloat).
-- **DP2** — prefer executable (tests) over prose (tests self-check).
+- **DP1** — spec only the blind spots, not everything (over-spec = form-cứng +
+  doc bloat; 80% of a screen is obvious).
+- **DP2** — prefer executable checks over prose (tests self-verify).
 - **DP3** — doc-time must be small + net-saving; AI drafts, human reviews.
-- **DP4** — a spec is a hypothesis; always pair it with a real oracle (golden
-  record / test / browser). This gate pins that a source is *declared*; the
-  golden-record harness (#5) later verifies the wiring is *correct*.
+- **DP4** — a spec is a hypothesis; pair it with a real oracle. This gate pins
+  that a source is *declared*; a golden-record check verifies the wiring is
+  *correct*.
 
-## Examples
+Full requirement history: [`docs/TOOL-REQUIREMENTS.md`](docs/TOOL-REQUIREMENTS.md).
+The `examples/` folder is one complete pre-coding pass on a real task.
 
-The `examples/` folder is one full pre-coding pass on a greenfield task
-(売却活動報告書): `SPEC.md`, `design.html` (the interactive prototype = design
-oracle), `GAP-QA.md` (the gap-audit output #2 will validate), and
-`DATA-BINDING.md` (the R4 map #4 gates).
+## License
+
+MIT.

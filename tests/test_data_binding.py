@@ -17,12 +17,13 @@ import time
 import unittest
 from pathlib import Path
 
-HARNESS_DIR = Path(__file__).resolve().parent
-GATE = HARNESS_DIR / "data_binding_gate.py"
-FIXTURES = HARNESS_DIR / "fixtures" / "data_binding_gate"
+TESTS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TESTS_DIR.parent
+GATE = REPO_ROOT / "contract_gate" / "gates" / "data_binding.py"
+FIXTURES = TESTS_DIR / "fixtures" / "data_binding"
 
-sys.path.insert(0, str(HARNESS_DIR))
-import data_binding_gate  # noqa: E402  (import after sys.path setup)
+sys.path.insert(0, str(REPO_ROOT))
+from contract_gate.gates import data_binding as data_binding_gate  # noqa: E402
 
 
 def run_gate(*args: str) -> subprocess.CompletedProcess:

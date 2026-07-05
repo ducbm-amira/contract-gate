@@ -305,6 +305,59 @@ def _row_label(cells: list[str], screen_col: int | None, elem_col: int | None, i
     return f"row {idx}"
 
 
+# --------------------------------------------------------------------------
+# Gate descriptor — consumed by the contract-gate CLI registry. Every gate
+# module exposes this same surface (KEY/TITLE/GLOBS/applies/evaluate/TEMPLATE)
+# so adding a gate to the CLI is a one-line registry append.
+# --------------------------------------------------------------------------
+
+KEY = "data-binding"
+TITLE = "Data-binding map"
+# Filename conventions the CLI's `check` autodiscovers (agnix-style zero-config).
+GLOBS = ("*.databinding.md", "*.contract.md", "*DATA-BINDING*.md", "*data-binding*.md")
+
+
+def contains_binding_table(text: str) -> bool:
+    """True iff `text` has at least one qualifying data-binding table (a header
+    with BOTH a type/kind and a source column). Lets the CLI skip files that
+    merely share a generic name (e.g. `*.contract.md`) but hold a different
+    kind of contract — a gate should not fail a file it does not own."""
+    for line in _extract_scope(text).splitlines():
+        if not _looks_like_table_row(line):
+            continue
+        cells = _split_row(line)
+        if _is_separator_row(cells):
+            continue
+        if _find_col(cells, TYPE_NEEDLES) is not None and _find_col(cells, SOURCE_NEEDLES) is not None:
+            return True
+    return False
+
+
+def applies(text: str) -> bool:
+    return contains_binding_table(text)
+
+
+def evaluate(text: str) -> tuple[bool, str]:
+    return evaluate_map(text)
+
+
+TEMPLATE = """\
+# Data-binding map — <screen/feature>
+
+> Screen × Element × {type; source; format; null}. List elements that carry
+> DATA (+ a few static rows for contrast). Skip the 80% obvious chrome.
+> A `data`-typed row with no source, or a data table that never tracks
+> null/empty, fails the gate.
+
+<!-- data-binding:start -->
+| Screen | Element | Type | Source (API/field/computed) | Format | Null/empty |
+|--------|---------|------|------------------------------|--------|------------|
+| <screen> | <field name> | data | `GET /x` → `obj.field` | raw | "-" if null |
+| <screen> | <heading>    | title |                        |        |            |
+<!-- data-binding:end -->
+"""
+
+
 def resolve_map_path(args: argparse.Namespace) -> Path:
     if args.map:
         return Path(args.map)

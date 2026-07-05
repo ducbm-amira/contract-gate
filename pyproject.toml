@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "contract-gate"
+version = "0.1.0"
+description = "Project-agnostic pre-coding contract gate — enforce understand → contract → verify before code, to stop vibe-coding bugs."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ducbm-amira" }]
+keywords = ["ai-coding", "claude-code", "spec-driven", "pre-commit", "contract", "gate", "vibe-coding", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+    "Topic :: Software Development :: Quality Assurance",
+]
+# Intentionally zero runtime dependencies — the gates are stdlib-only so the
+# tool runs under a bare `python3` in any CI with no install chain.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ducbm-amira/contract-gate"
+Issues = "https://github.com/ducbm-amira/contract-gate/issues"
+
+[project.scripts]
+contract-gate = "contract_gate.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["contract_gate*"]
