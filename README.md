@@ -62,7 +62,10 @@ contract-gate check .
 few conventional variants), runs every gate that *owns* the file (a gate skips
 files it doesn't recognize — it never fails someone else's contract), and prints
 a unified pass/fail with a one-line reason per contract. Exit `1` if any gate
-fails, `0` otherwise. `--format json` for machine output.
+fails, `0` otherwise. `--format json` for machine output. Add `--all` to list
+**every** finding per contract at once (default stops at the first per file) —
+useful when a fresh contract has many blind spots and you want them all up front
+instead of one resolve-recheck cycle at a time.
 
 ## Gates
 

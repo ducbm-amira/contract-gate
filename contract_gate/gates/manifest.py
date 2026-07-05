@@ -207,6 +207,59 @@ def evaluate(text: str, path: Path | None = None) -> tuple[bool, str]:
     return evaluate_manifest(text)
 
 
+def findings(text: str, path: Path | None = None) -> list[str]:
+    """ALL failure reasons (empty = pass): one finding per behavior row with an
+    empty Observable. Mirrors evaluate_manifest. Backs `check --all`."""
+    if not text or not text.strip():
+        return ["manifest empty"]
+    lines = text.splitlines()
+    n = len(lines)
+
+    header_idx = None
+    header_cells: list[str] = []
+    obs_col = None
+    i = 0
+    while i < n:
+        if _looks_like_table_row(lines[i]):
+            cells = _split_row(lines[i])
+            if not _is_separator_row(cells):
+                col = _find_col(cells, ("observable", "oracle"))
+                if col is not None:
+                    header_idx, header_cells, obs_col = i, cells, col
+                    break
+        i += 1
+    if header_idx is None:
+        return ["no behavior table with a resolvable Observable column found"]
+
+    behavior_col = _find_col(header_cells, ("hành vi", "behavior"))
+    j = header_idx + 1
+    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
+        j += 1
+
+    out: list[str] = []
+    row_count = 0
+    while j < n:
+        if not _looks_like_table_row(lines[j]):
+            break
+        cells = _split_row(lines[j])
+        if _is_separator_row(cells):
+            j += 1
+            continue
+        row_count += 1
+        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
+        if _is_empty_observable(observable_cell):
+            if behavior_col is not None and behavior_col < len(cells):
+                label = cells[behavior_col]
+            else:
+                label = cells[0] if cells else "?"
+            out.append(f'row {row_count} ("{label}") has empty Observable')
+        j += 1
+
+    if row_count == 0:
+        return ["behavior table has no rows"]
+    return out
+
+
 DRAFT_GUIDANCE = """\
 Draft a Legacy Behavior Manifest: an inventory of EVERY behavior of the legacy
 page you are porting — visible ones AND invisible side-effects (fire-and-forget

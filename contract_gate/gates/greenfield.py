@@ -287,6 +287,72 @@ def evaluate(text: str, path: Path | None = None) -> tuple[bool, str]:
     return evaluate_spec(text, spec_dir)
 
 
+def findings(text: str, path: Path | None = None) -> list[str]:
+    """ALL failure reasons (empty = pass): one finding per row missing an
+    Observable or a resolvable Design-ref. Mirrors evaluate_spec's per-row
+    precedence (Observable before Design-ref). Backs `check --all`."""
+    spec_dir = path.parent if path is not None else Path(".")
+    if not text or not text.strip():
+        return ["spec empty"]
+    file_exempt = _spec_is_visual_exempt(text)
+    lines = text.splitlines()
+    n = len(lines)
+
+    header_idx = None
+    header_cells: list[str] = []
+    design_col = obs_col = None
+    i = 0
+    while i < n:
+        if _looks_like_table_row(lines[i]):
+            cells = _split_row(lines[i])
+            if not _is_separator_row(cells):
+                d = _find_col(cells, ("design", "mockup", "design-ref"))
+                o = _find_col(cells, ("observable", "assert"))
+                if d is not None and o is not None:
+                    header_idx, header_cells, design_col, obs_col = i, cells, d, o
+                    break
+        i += 1
+    if header_idx is None:
+        return ["no behavior table with resolvable Design-ref and Observable columns found"]
+
+    behavior_col = _find_col(header_cells, ("behavior", "hành vi", "hanh vi"))
+    j = header_idx + 1
+    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
+        j += 1
+
+    out: list[str] = []
+    row_count = 0
+    while j < n:
+        if not _looks_like_table_row(lines[j]):
+            break
+        cells = _split_row(lines[j])
+        if _is_separator_row(cells):
+            j += 1
+            continue
+        row_count += 1
+        if behavior_col is not None and behavior_col < len(cells):
+            label = cells[behavior_col]
+        else:
+            label = cells[0] if cells else "?"
+        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
+        if _is_empty_cell(observable_cell):
+            out.append(f'row {row_count} ("{label}") has empty Observable')
+            j += 1
+            continue
+        design_cell = cells[design_col] if design_col < len(cells) else ""
+        row_exempt = file_exempt or _norm(design_cell) == "N/A-logic"
+        if not row_exempt:
+            if _is_empty_cell(design_cell):
+                out.append(f'row {row_count} ("{label}") has empty Design-ref')
+            elif not _designref_ok(design_cell, spec_dir):
+                out.append(f'row {row_count} ("{label}") has unresolvable Design-ref')
+        j += 1
+
+    if row_count == 0:
+        return ["spec has no rows"]
+    return out
+
+
 DRAFT_GUIDANCE = """\
 Draft a greenfield 2-layer oracle spec: every behavior row needs BOTH a
 Design-ref (what the mockup/design says) AND an Observable (a runnable

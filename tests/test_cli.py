@@ -56,6 +56,43 @@ class CheckTests(unittest.TestCase):
             self.assertIn('"pass": true', r.stdout)
 
 
+class CheckAllTests(unittest.TestCase):
+    _TWO_GAPS = (
+        "# map\n\n"
+        "| Screen | Element | Type | Source | Null |\n"
+        "|--|--|--|--|--|\n"
+        "| s | a | data |  | hide |\n"
+        "| s | b | data | ? not in spec | hide |\n"
+    )
+
+    def test_default_reports_first_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.contract.md").write_text(self._TWO_GAPS, encoding="utf-8")
+            r = run_cli("check", d)
+            self.assertEqual(r.returncode, 1)
+            # default stops at the first finding per file
+            self.assertEqual(r.stdout.count("has no source"), 1)
+
+    def test_all_lists_every_finding(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "m.contract.md").write_text(self._TWO_GAPS, encoding="utf-8")
+            r = run_cli("check", d, "--all")
+            self.assertEqual(r.returncode, 1)
+            self.assertEqual(r.stdout.count("has no source"), 2)
+            self.assertIn('"s × a"', r.stdout)
+            self.assertIn('"s × b"', r.stdout)
+            # summary counts by distinct contract file, not by finding
+            self.assertIn("across 1 contract(s)", r.stdout)
+
+    def test_all_still_passes_clean_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "ok.contract.md").write_text(
+                (FIXTURES / "pass-en.map.md").read_text(encoding="utf-8"), encoding="utf-8")
+            r = run_cli("check", d, "--all")
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("pass", r.stdout)
+
+
 class InitTests(unittest.TestCase):
     def test_init_scaffolds_and_checks_clean(self):
         with tempfile.TemporaryDirectory() as d:

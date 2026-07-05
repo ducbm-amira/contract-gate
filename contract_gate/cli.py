@@ -43,7 +43,7 @@ def _discover(root: Path, globs: tuple[str, ...]) -> list[Path]:
     return sorted(seen)
 
 
-def cmd_check(path: str, fmt: str) -> int:
+def cmd_check(path: str, fmt: str, all_mode: bool = False) -> int:
     root = Path(path)
     if not root.exists():
         print(f"fail path not found: {path}", file=sys.stderr)
@@ -61,8 +61,17 @@ def cmd_check(path: str, fmt: str) -> int:
             # that holds a different contract is skipped, not failed.
             if not gate.applies(text):
                 continue
-            ok, reason = gate.evaluate(text, f)
-            results.append({"gate": gate.KEY, "file": f, "ok": ok, "reason": reason})
+            if all_mode and hasattr(gate, "findings"):
+                fs = gate.findings(text, f)
+                if fs:
+                    for reason in fs:
+                        results.append({"gate": gate.KEY, "file": f, "ok": False, "reason": reason})
+                else:
+                    _ok, reason = gate.evaluate(text, f)  # pass summary
+                    results.append({"gate": gate.KEY, "file": f, "ok": True, "reason": reason})
+            else:
+                ok, reason = gate.evaluate(text, f)
+                results.append({"gate": gate.KEY, "file": f, "ok": ok, "reason": reason})
 
     return _report(results, fmt, root)
 
@@ -86,8 +95,14 @@ def _report(results: list[dict], fmt: str, root: Path) -> int:
             mark = "\033[32mpass\033[0m" if r["ok"] else "\033[31mfail\033[0m"
             print(f"{mark}  [{r['gate']}] {rel}: {r['reason']}")
         if results:
-            n_pass = len(results) - len(failed)
-            print(f"\n{n_pass} passed, {len(failed)} failed across {len(results)} contract(s)")
+            # Count by distinct contract file (a file may yield >1 finding in --all).
+            files: dict = {}
+            for r in results:
+                files.setdefault(r["file"], []).append(r)
+            passed = sum(1 for rs in files.values() if all(x["ok"] for x in rs))
+            failed_files = len(files) - passed
+            extra = f" ({len(failed)} findings)" if len(failed) > failed_files else ""
+            print(f"\n{passed} passed, {failed_files} failed across {len(files)} contract(s){extra}")
 
     return 1 if failed else 0
 
@@ -179,6 +194,8 @@ def _build_parser() -> argparse.ArgumentParser:
     pc = sub.add_parser("check", help="Discover contract files under a path and gate them")
     pc.add_argument("path", nargs="?", default=".", help="Directory to scan (default: .)")
     pc.add_argument("--format", choices=["terminal", "json"], default="terminal")
+    pc.add_argument("--all", action="store_true",
+                    help="List every finding per contract (default stops at the first per file)")
 
     pi = sub.add_parser("init", help="Scaffold starter contract templates")
     pi.add_argument("path", nargs="?", default=".", help="Directory to write into (default: .)")
@@ -201,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.cmd == "check":
-        return cmd_check(args.path, args.format)
+        return cmd_check(args.path, args.format, args.all)
     if args.cmd == "init":
         return cmd_init(args.path)
     if args.cmd == "draft":

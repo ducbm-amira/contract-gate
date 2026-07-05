@@ -202,20 +202,35 @@ def _extract_scope(text: str) -> str:
 
 
 def evaluate_map(text: str) -> tuple[bool, str]:
-    """Core DBIND-02..DBIND-04 verdict over a data-binding map document.
+    """Core DBIND-02..DBIND-04 verdict over a data-binding map document
+    (fail-fast). Returns (ok, reason) — the FIRST problem, or a pass summary.
+    Delegates to _analyze; see findings() for the list-all-problems variant."""
+    fs, summary = _analyze(text)
+    if fs:
+        return False, fs[0]
+    return True, summary
 
-    Returns (ok, reason). Scans every qualifying table (type + source columns)
-    within scope; a data row missing a source, a data table lacking a
-    null-handling column, an unfilled null cell, or (when a format column
-    exists) an unfilled format cell all fail with a reason naming the offending
-    screen/element. Linear single pass (DBIND-05) — no regex.
+
+def findings(text: str, path: Path | None = None) -> list[str]:
+    """ALL failure reasons for a data-binding map (empty list = pass): one
+    finding per problematic data row (first issue on that row), plus a per-row
+    note for any data table missing a null/empty-handling column. Backs
+    `contract-gate check --all`. `path` unused (no on-disk resolution)."""
+    return _analyze(text)[0]
+
+
+def _analyze(text: str) -> tuple[list[str], str]:
+    """Single linear pass shared by evaluate_map (fail-fast) and findings
+    (collect-all). Returns (findings, summary): a non-empty findings list means
+    fail; summary is meaningful only when findings is empty. No regex (DBIND-05).
     """
     if not text or not text.strip():
-        return False, "map empty"
+        return ["map empty"], ""
 
     lines = _extract_scope(text).splitlines()
     n = len(lines)
 
+    fs: list[str] = []
     qualifying_tables = 0
     data_rows_total = 0
 
@@ -244,7 +259,6 @@ def evaluate_map(text: str) -> tuple[bool, str]:
         elem_col = _find_col(header_cells, ELEMENT_NEEDLES)
         screen_col = _find_col(header_cells, SCREEN_NEEDLES)
 
-        # Walk this table's body.
         j = i + 1
         if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
             j += 1
@@ -265,38 +279,44 @@ def evaluate_map(text: str) -> tuple[bool, str]:
             data_rows_total += 1
             label = _row_label(cells, screen_col, elem_col, table_row_idx)
 
+            # One finding per row: report the first issue in order, then move on.
             source_cell = cells[source_col] if source_col < len(cells) else ""
             if _is_empty_cell(source_cell):
-                return False, f'data element {label} has no source (nguồn) — ô data chưa ghi nguồn = chưa cho build'
+                fs.append(f'data element {label} has no source (nguồn) — ô data chưa ghi nguồn = chưa cho build')
+                j += 1
+                continue
 
             if null_col is None:
-                return False, (
+                fs.append(
                     f'data element {label} — map thiếu cột null/empty-handling '
                     f'(LAND null là bug hay trốn nhất, phải khai)'
                 )
+                j += 1
+                continue
             null_cell = cells[null_col] if null_col < len(cells) else ""
             if _is_empty_cell(null_cell):
-                return False, f'data element {label} has no null/empty handling'
+                fs.append(f'data element {label} has no null/empty handling')
+                j += 1
+                continue
 
             if format_col is not None:
                 format_cell = cells[format_col] if format_col < len(cells) else ""
                 if _is_empty_cell(format_cell):
-                    return False, f'data element {label} has no format (điền hoặc ghi N/A)'
+                    fs.append(f'data element {label} has no format (điền hoặc ghi N/A)')
 
             j += 1
 
         i = j
 
     if qualifying_tables == 0:
-        return False, (
-            "no data-binding map table found "
-            "(cần bảng có cột type/loại + source/nguồn — R4 Screen×Element map)"
-        )
+        return ["no data-binding map table found "
+                "(cần bảng có cột type/loại + source/nguồn — R4 Screen×Element map)"], ""
 
-    return True, (
+    summary = (
         f"{data_rows_total} data binding(s) verified across "
         f"{qualifying_tables} table(s) (nguồn + null-handling present)"
     )
+    return fs, summary
 
 
 def _skip_table_body(lines: list[str], start: int, n: int) -> int:
