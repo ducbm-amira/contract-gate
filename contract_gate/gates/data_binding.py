@@ -354,7 +354,8 @@ def applies(text: str) -> bool:
     return contains_binding_table(text)
 
 
-def evaluate(text: str) -> tuple[bool, str]:
+def evaluate(text: str, path: Path | None = None) -> tuple[bool, str]:
+    # path unused — data-binding needs no on-disk resolution.
     return evaluate_map(text)
 
 

@@ -69,8 +69,8 @@ fails, `0` otherwise. `--format json` for machine output.
 | Gate | Question it gates | Status |
 |------|-------------------|--------|
 | **`data-binding`** | Does every DATA element declare a source + null/empty handling? | ✅ shipped |
+| **`greenfield`** | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable per behavior)? | ✅ shipped |
 | `manifest` | Does a port have a Legacy Behavior Manifest with an observable per behavior? | 🔜 porting in |
-| `greenfield` | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable)? | 🔜 porting in |
 | `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
 
 ## `draft` — drafting the contract (the adoption unlock)

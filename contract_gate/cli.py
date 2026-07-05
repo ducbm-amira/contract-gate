@@ -61,7 +61,7 @@ def cmd_check(path: str, fmt: str) -> int:
             # that holds a different contract is skipped, not failed.
             if not gate.applies(text):
                 continue
-            ok, reason = gate.evaluate(text)
+            ok, reason = gate.evaluate(text, f)
             results.append({"gate": gate.KEY, "file": f, "ok": ok, "reason": reason})
 
     return _report(results, fmt, root)
