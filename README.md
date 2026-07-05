@@ -49,6 +49,15 @@ $EDITOR example.data-binding.contract.md   # fill in the blind spots
 contract-gate check .         # gate them
 ```
 
+Or let your agent draft it from the source material, then gate the result:
+
+```bash
+contract-gate draft --gate data-binding --source spec.md --source design.html
+# → emits a prompt (schema + your source + "mark unknowns with ?, don't invent")
+#   paste into your agent, save the reply as *.contract.md, then:
+contract-gate check .
+```
+
 `check` autodiscovers files named `*.contract.md` / `*.databinding.md` (and a
 few conventional variants), runs every gate that *owns* the file (a gate skips
 files it doesn't recognize — it never fails someone else's contract), and prints
@@ -63,7 +72,26 @@ fails, `0` otherwise. `--format json` for machine output.
 | `manifest` | Does a port have a Legacy Behavior Manifest with an observable per behavior? | 🔜 porting in |
 | `greenfield` | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable)? | 🔜 porting in |
 | `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
-| *generator* | AI-draft the contract from a spec/design/PR so adoption isn't "write homework first" | ⏳ the adoption unlock |
+
+## `draft` — drafting the contract (the adoption unlock)
+
+Writing a contract by hand is the friction that kills cold-adoption. `draft`
+removes it **without** adding an LLM dependency: contract-gate stays zero-dep
+and agent-agnostic by acting as a **prompt-emitter**, not an LLM client. You
+already work inside an agent — `draft` assembles the schema + your source
+material + focused guidance into one prompt; the agent drafts, you review, the
+gate verifies.
+
+```bash
+contract-gate draft --gate data-binding --source spec.md   # prompt → stdout
+contract-gate draft --gate data-binding --source spec.md --via "claude -p"  # optional: pipe to a local LLM CLI, save the reply
+```
+
+The prompt is engineered so the draft **can't game the gate**: it instructs the
+model to write `?` for any source it cannot derive from the material and to
+never invent an endpoint/field — so real blind spots surface (the gate fails on
+`?`) instead of being papered over. AI drafts the derivable 80%; the risky 20%
+still lands on a human. (DP3 + DP4.)
 
 ### `data-binding` — the shipped gate
 

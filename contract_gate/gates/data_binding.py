@@ -341,6 +341,26 @@ def evaluate(text: str) -> tuple[bool, str]:
     return evaluate_map(text)
 
 
+DRAFT_GUIDANCE = """\
+Draft a Data-binding map. List every UI element that carries DATA (plus a few
+static rows — title/label/image/action — for contrast); SKIP the obvious 80%
+chrome (DP1: spec only the blind spots).
+
+For each `data` row you MUST fill:
+- Source: an API path + field (`GET /owner/:id → owner.name`), a plain field
+  path (`sale.price`), or `computed: <expr>`.
+- Null/empty: what the UI shows when the value is null/empty/0.
+- Format: only if you added a Format column.
+
+CRITICAL — do NOT game the gate: if you cannot determine a source from the
+material, write `?` in the Source cell. NEVER invent an endpoint or field name
+to make the gate pass — a `?` is correct; it flags a real blind spot for a
+human to resolve. Same for a null rule you can't infer.
+
+Output ONLY the completed markdown contract below (keep the table shape); no
+prose before or after."""
+
+
 TEMPLATE = """\
 # Data-binding map — <screen/feature>
 
