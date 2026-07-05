@@ -13,6 +13,15 @@ or an agent's pre-BUILD step.
 contract-gate check .        # exit 0 = all contracts sound, exit 1 = a gap
 ```
 
+## The loop
+
+![contract-gate workflow](docs/flow.png)
+
+Draft the contract from your spec/design, fill in the blind spots (unknowns stay
+`?`), gate it. Anything unresolved fails the gate — you resolve it and re-check
+*before* writing code, so the contract becomes the oracle you build against.
+(Diagram source: [`docs/flow.drawio`](docs/flow.drawio).)
+
 ## Why this exists (and how it differs from the linters)
 
 Tools like [agnix](https://github.com/agent-sh/agnix) and
