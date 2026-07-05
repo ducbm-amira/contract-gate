@@ -119,9 +119,26 @@ def _norm(cell: str) -> str:
     return cell.strip()
 
 
+# Placeholder tokens that mark a cell as UNRESOLVED when they OPEN the cell —
+# an agent/human naturally annotates the gap (`? endpoint unknown`, `TODO: ask`),
+# which is more useful than a bare marker but must still fail. A leading `?` is
+# the canonical "open question"; a mid-string `?` (e.g. `GET /x?id=1`) is fine.
+_UNRESOLVED_PREFIXES = ("todo", "tbd", "wip", "tba")
+
+
 def _is_empty_cell(cell: str) -> bool:
     n = _norm(cell)
-    return n in EMPTY_CELL_MARKERS or n.lower() in PLACEHOLDER_WORDS
+    if n in EMPTY_CELL_MARKERS:
+        return True
+    low = n.lower()
+    if low in PLACEHOLDER_WORDS:
+        return True
+    if n.startswith("?"):
+        return True
+    for w in _UNRESOLVED_PREFIXES:
+        if low == w or low.startswith(w + " ") or low.startswith(w + ":") or low.startswith(w + "-"):
+            return True
+    return False
 
 
 def _looks_like_table_row(line: str) -> bool:
@@ -353,9 +370,10 @@ For each `data` row you MUST fill:
 - Format: only if you added a Format column.
 
 CRITICAL — do NOT game the gate: if you cannot determine a source from the
-material, write `?` in the Source cell. NEVER invent an endpoint or field name
-to make the gate pass — a `?` is correct; it flags a real blind spot for a
-human to resolve. Same for a null rule you can't infer.
+material, open the cell with `?` (a short reason after it is welcome, e.g.
+`? endpoint not in spec`). NEVER invent an endpoint or field name to make the
+gate pass — a leading `?` is correct; the gate fails on it so a human resolves
+the real blind spot. Same for a null rule you can't infer.
 
 Output ONLY the completed markdown contract below (keep the table shape); no
 prose before or after."""

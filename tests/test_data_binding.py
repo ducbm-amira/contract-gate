@@ -101,6 +101,16 @@ class DataBindingGateCLITests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("fail", r.stderr)
 
+    def test_fail_annotated_question_source(self):
+        """A source that OPENS with `?` but carries an explanatory reason
+        (`? sale_ column not in spec`) is still unresolved -> fail. Guards the
+        hole an agent hits when it annotates a blind spot instead of writing a
+        bare `?`."""
+        r = run_gate("--map", str(FIXTURES / "fail-annotated-question-source.map.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("source", r.stderr)
+        self.assertIn("price", r.stderr)
+
     def test_fail_unknown_type_is_gated(self):
         """An unrecognized type (`chip`) is treated as data; blank source
         fails -> exit!=0 (DBIND-03 conservative default)."""
@@ -174,6 +184,17 @@ class DataBindingGateParserUnitTests(unittest.TestCase):
             "|--|--|--|--|\n"
             "| hero image | image |  |  |\n"
             "| name | data | `u.name` | show blank |\n"
+        )
+        ok, reason = data_binding_gate.evaluate_map(text)
+        self.assertTrue(ok, msg=reason)
+
+    def test_midstring_question_mark_source_is_valid(self):
+        """A `?` inside a source (query string) is NOT an open-question marker;
+        only a LEADING `?` means unresolved."""
+        text = (
+            "| Element | Type | Source | Null |\n"
+            "|--|--|--|--|\n"
+            "| price | data | `GET /listing?id=1` → `price` | hide |\n"
         )
         ok, reason = data_binding_gate.evaluate_map(text)
         self.assertTrue(ok, msg=reason)
