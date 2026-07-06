@@ -111,6 +111,20 @@ class DataBindingGateCLITests(unittest.TestCase):
         self.assertIn("source", r.stderr)
         self.assertIn("price", r.stderr)
 
+    def test_pass_api_existing_new(self):
+        """Optional API cũ/mới column filled (existing/new) -> pass; summary
+        surfaces the new-API dependency count."""
+        r = run_gate("--map", str(FIXTURES / "pass-api-existing-new.map.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("API MỚI", r.stdout)
+
+    def test_fail_api_undeclared(self):
+        """A data row leaves the present API column blank -> fail (an
+        undeclared existing/new is a hidden BE-dependency blind spot)."""
+        r = run_gate("--map", str(FIXTURES / "fail-api-undeclared.map.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("API cũ/mới", r.stderr)
+
     def test_fail_unknown_type_is_gated(self):
         """An unrecognized type (`chip`) is treated as data; blank source
         fails -> exit!=0 (DBIND-03 conservative default)."""

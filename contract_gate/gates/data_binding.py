@@ -113,6 +113,13 @@ NULL_NEEDLES = (
 FORMAT_NEEDLES = ("format", "định dạng", "dinh dang", "đơn vị", "don vi")
 ELEMENT_NEEDLES = ("element", "phần tử", "phan tu", "component", "affordance")
 SCREEN_NEEDLES = ("screen", "màn", "page", "trang", "view")
+# Optional column declaring whether a data source is an EXISTING API (curl-able
+# now, wire-only) or a NEW one (a BE build dependency — a cross-team blocker that
+# is easy to hide). NOT the bare word "api" (that lives in the Source header).
+API_NEEDLES = ("cũ/mới", "cu/moi", "existing/new", "old/new", "api status",
+               "api cũ", "api moi", "api mới", "reuse", "existing?")
+# A cell value that means "needs a brand-new API/endpoint the BE must build".
+_NEW_API_MARKERS = ("new", "mới", "moi", "chưa có", "chua co", "build mới", "tbd-api")
 
 
 def _norm(cell: str) -> str:
@@ -233,6 +240,7 @@ def _analyze(text: str) -> tuple[list[str], str]:
     fs: list[str] = []
     qualifying_tables = 0
     data_rows_total = 0
+    new_api_count = 0
 
     i = 0
     while i < n:
@@ -256,6 +264,7 @@ def _analyze(text: str) -> tuple[list[str], str]:
         qualifying_tables += 1
         null_col = _find_col(header_cells, NULL_NEEDLES)
         format_col = _find_col(header_cells, FORMAT_NEEDLES)
+        api_col = _find_col(header_cells, API_NEEDLES)
         elem_col = _find_col(header_cells, ELEMENT_NEEDLES)
         screen_col = _find_col(header_cells, SCREEN_NEEDLES)
 
@@ -303,6 +312,20 @@ def _analyze(text: str) -> tuple[list[str], str]:
                 format_cell = cells[format_col] if format_col < len(cells) else ""
                 if _is_empty_cell(format_cell):
                     fs.append(f'data element {label} has no format (điền hoặc ghi N/A)')
+                    j += 1
+                    continue
+
+            if api_col is not None:
+                api_cell = cells[api_col] if api_col < len(cells) else ""
+                if _is_empty_cell(api_cell):
+                    fs.append(
+                        f'data element {label} chưa khai API cũ/mới (existing/new) — '
+                        f'new = phụ thuộc BE build, không phải wire'
+                    )
+                    j += 1
+                    continue
+                if any(m in _norm(api_cell).lower() for m in _NEW_API_MARKERS):
+                    new_api_count += 1
 
             j += 1
 
@@ -312,9 +335,10 @@ def _analyze(text: str) -> tuple[list[str], str]:
         return ["no data-binding map table found "
                 "(cần bảng có cột type/loại + source/nguồn — R4 Screen×Element map)"], ""
 
+    new_note = f"; {new_api_count} phụ thuộc API MỚI (BE build)" if new_api_count else ""
     summary = (
         f"{data_rows_total} data binding(s) verified across "
-        f"{qualifying_tables} table(s) (nguồn + null-handling present)"
+        f"{qualifying_tables} table(s) (nguồn + null-handling present{new_note})"
     )
     return fs, summary
 
@@ -389,6 +413,10 @@ For each `data` row you MUST fill:
   path (`sale.price`), or `computed: <expr>`.
 - Null/empty: what the UI shows when the value is null/empty/0.
 - Format: only if you added a Format column.
+- API cũ/mới: if you added that column, mark each data source `existing` (an API
+  that already exists — you can curl it now, wire-only) or `new` (an endpoint the
+  BE must still build — a cross-team dependency, not just wiring). `new` = a
+  scheduling risk that must be visible, so never hide it as `existing`.
 
 CRITICAL — do NOT game the gate: if you cannot determine a source from the
 material, open the cell with `?` (a short reason after it is welcome, e.g.
@@ -409,10 +437,11 @@ TEMPLATE = """\
 > null/empty, fails the gate.
 
 <!-- data-binding:start -->
-| Screen | Element | Type | Source (API/field/computed) | Format | Null/empty |
-|--------|---------|------|------------------------------|--------|------------|
-| <screen> | <field name> | data | `GET /x` → `obj.field` | raw | "-" if null |
-| <screen> | <heading>    | title |                        |        |            |
+| Screen | Element | Type | Source (API/field/computed) | API cũ/mới | Format | Null/empty |
+|--------|---------|------|------------------------------|-----------|--------|------------|
+| <screen> | <field name> | data | `GET /x` → `obj.field` | existing | raw | "-" if null |
+| <screen> | <field cần BE> | data | `POST /new-endpoint` → `y` | new | raw | "-" if null |
+| <screen> | <heading>    | title |                        |           |        |            |
 <!-- data-binding:end -->
 """
 
