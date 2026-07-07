@@ -83,7 +83,19 @@ instead of one resolve-recheck cycle at a time.
 | **`data-binding`** | Does every DATA element declare a source + null/empty handling? | ✅ shipped |
 | **`greenfield`** | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable per behavior)? | ✅ shipped |
 | **`manifest`** | Does a port have a Legacy Behavior Manifest with an observable per behavior? | ✅ shipped |
+| **`golden-record`** | For a real record with a known answer, does the real running app's Actual value match the real DB/API's Expected value? | ✅ shipped |
 | `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
+
+`data-binding`/`greenfield`/`manifest` gate that a contract is *declared*
+before code is written. `golden-record` is a different kind of gate: it
+verifies a declared source is *actually correct* against reality — one real
+record, queried straight from the DB/API (Expected) checked against what the
+real running app displays for it (Actual). Nothing here drives a browser or
+a DB itself (that would break the zero-dep, agent-agnostic contract); a
+human or agent captures both values, this gate only checks they were
+captured and that they agree. See
+[`contract_gate/gates/golden_record.py`](contract_gate/gates/golden_record.py)
+for the full rationale (GOLD-01..05).
 
 ## `draft` — drafting the contract (the adoption unlock)
 

@@ -2,6 +2,6 @@
 importing its module and appending it here; each module must expose the
 descriptor surface KEY / TITLE / GLOBS / applies(text) / evaluate(text) /
 TEMPLATE (see data_binding.py)."""
-from . import data_binding, greenfield, manifest
+from . import data_binding, golden_record, greenfield, manifest
 
-REGISTRY = [data_binding, greenfield, manifest]
+REGISTRY = [data_binding, greenfield, manifest, golden_record]
