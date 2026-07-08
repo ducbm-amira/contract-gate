@@ -163,6 +163,32 @@ class GreenfieldGateCLITests(unittest.TestCase):
         self.assertIn("fail", r.stderr)
         self.assertIn("Confidence", r.stderr)
 
+    def test_pass_multi_table_master_spec(self):
+        """D-07: a master spec with 2 screen-sections, each its own table,
+        both valid -> pass, counting rows from BOTH tables."""
+        r = run_gate("--spec", str(FIXTURES / "pass-multi-table-master-spec.spec.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("pass", r.stdout)
+        self.assertIn("2 behavior row(s) verified across 2 table(s)", r.stdout)
+
+    def test_fail_multi_table_violation_in_later_table_not_missed(self):
+        """D-07 regression guard: a violation in the SECOND/THIRD table of a
+        multi-table master spec must fail the gate (not be silently skipped
+        because table 1 already passed) -- names the screen heading."""
+        r = run_gate("--spec", str(FIXTURES / "fail-multi-table-second-table-violation.spec.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("Màn 2", r.stderr)
+
+    def test_findings_all_report_every_table_not_just_first(self):
+        """D-07 + `--all`: findings() must surface violations from EVERY
+        table, not stop after the first table's rows are exhausted."""
+        text = Path(FIXTURES / "fail-multi-table-second-table-violation.spec.md").read_text(encoding="utf-8")
+        out = greenfield_gate.findings(text, FIXTURES / "fail-multi-table-second-table-violation.spec.md")
+        self.assertEqual(len(out), 2, msg=f"expected 2 findings (one per bad table), got: {out}")
+        self.assertTrue(any("Màn 2" in f for f in out), msg=out)
+        self.assertTrue(any("Màn 3" in f for f in out), msg=out)
+
     def test_pass_no_confidence_column_is_unaffected(self):
         """Backward compatibility: specs with no Confidence column at all
         are graded exactly as before D-06 (already covered by the other

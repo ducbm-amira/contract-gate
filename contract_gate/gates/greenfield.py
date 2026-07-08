@@ -70,6 +70,26 @@ so no existing spec regresses — this only activates once an author opts in
 by adding the column, which the updated DRAFT_GUIDANCE does automatically
 for freshly drafted specs.
 
+D-07 (multi-table files — loop, don't stop at the first): a single spec
+file may hold MORE THAN ONE behavior table — e.g. one master spec covering
+N screens, one table per `## Màn <k>` section. Before this fix the gate
+located only the FIRST table with Design-ref+Observable columns, graded
+its rows, and silently stopped: any violation in a later table (missing
+Observable, D-06 empty Restated, anything) was never seen and the file
+still reported `pass`. Demonstrated live (2026-07-09): a 3-table demo spec
+with real D-06 violations in tables 2 and 3 reported "pass 2 behavior
+row(s) verified" — counting only table 1's rows, a false PASS (the worst
+failure mode a gate can have). Fixed: `_iter_tables()` scans the WHOLE
+file and returns every table it finds, in order; each keeps its OWN
+resolved column indices (tables need not share a layout) and its own
+[row_start, row_end) line range. Every table is graded — evaluate_spec
+still fails fast (stops at the first violation, across tables in file
+order); findings() collects violations from ALL tables for `check --all`.
+A table's failure reason is prefixed with a label: the nearest preceding
+markdown heading line (e.g. "Màn 2: report-2 (物件確認)"), or `table N`
+(1-based discovery order) when no heading precedes it — so a 10-screen
+master spec's failure names the screen, not just a bare row number.
+
 D-01 (format-forgiving parser, mirrors manifest_gate.py's D-05): the
 Design-ref column is located by a case-insensitive substring match against
 the header cell ("design", "mockup", or "design-ref"); the Observable column
@@ -107,6 +127,12 @@ _LOCAL_DESIGNREF_EXTENSIONS = (".html", ".pdf", ".png", ".jpg", ".jpeg")
 CONFIDENCE_NEEDLES = ("confidence", "conf")
 RESTATED_NEEDLES = ("restated", "human", "diễn giải", "dien giai")
 _GREEN_MARKER = "🟢"
+
+# D-01/D-07 shared column-detection needles (one source, used by _iter_tables
+# AND applies() so the two never drift out of sync).
+DESIGN_NEEDLES = ("design", "mockup", "design-ref")
+OBSERVABLE_NEEDLES = ("observable", "assert")
+BEHAVIOR_NEEDLES = ("behavior", "hành vi", "hanh vi")
 
 
 def _norm(cell: str) -> str:
@@ -180,6 +206,101 @@ def _spec_is_visual_exempt(text: str) -> bool:
     return False
 
 
+def _nearest_heading(lines: list[str], idx: int) -> str | None:
+    """D-07: label a table by the nearest preceding markdown heading
+    (`#`.."######" + text) above line `idx`, stripped of the leading `#`s
+    -- gives readable per-table failure reasons in a multi-table master
+    spec (e.g. "Màn 2: report-2 (物件確認)"). None if nothing precedes it."""
+    i = idx - 1
+    while i >= 0:
+        s = lines[i].strip()
+        if s.startswith("#"):
+            return s.lstrip("#").strip()
+        i -= 1
+    return None
+
+
+def _iter_tables(lines: list[str]) -> list[dict]:
+    """D-07: locate EVERY behavior table in the file, not just the first.
+    Each descriptor carries its own resolved column indices (tables need
+    not share a layout) plus the [row_start, row_end) line range of its
+    body rows. Linear single pass (T-02-01 preserved): once a table's body
+    is found, the scan jumps straight past it instead of rescanning."""
+    n = len(lines)
+    tables: list[dict] = []
+    i = 0
+    while i < n:
+        line = lines[i]
+        if _looks_like_table_row(line):
+            cells = _split_row(line)
+            if not _is_separator_row(cells):
+                d_col = _find_col(cells, DESIGN_NEEDLES)
+                o_col = _find_col(cells, OBSERVABLE_NEEDLES)
+                if d_col is not None and o_col is not None:
+                    header_idx = i
+                    header_cells = cells
+                    j = header_idx + 1
+                    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
+                        j += 1
+                    row_start = j
+                    while j < n and _looks_like_table_row(lines[j]):
+                        j += 1
+                    tables.append(
+                        {
+                            "label": _nearest_heading(lines, header_idx) or f"table {len(tables) + 1}",
+                            "design_col": d_col,
+                            "obs_col": o_col,
+                            "behavior_col": _find_col(header_cells, BEHAVIOR_NEEDLES),
+                            "confidence_col": _find_col(header_cells, CONFIDENCE_NEEDLES),
+                            "restated_col": _find_col(header_cells, RESTATED_NEEDLES),
+                            "row_start": row_start,
+                            "row_end": j,
+                        }
+                    )
+                    i = j
+                    continue
+        i += 1
+    return tables
+
+
+def _check_row(cells: list[str], table: dict, spec_dir: Path, file_exempt: bool) -> str | None:
+    """First violation reason for one row against its OWN table's column
+    layout, or None if the row passes. Precedence mirrors the pre-D-07
+    behavior exactly: Observable, then Design-ref, then D-06 Confidence/
+    Restated -- a row failing an earlier check is never also reported for
+    a later one."""
+    design_col = table["design_col"]
+    obs_col = table["obs_col"]
+
+    observable_cell = cells[obs_col] if obs_col < len(cells) else ""
+    if _is_empty_cell(observable_cell):
+        return "has empty Observable"
+
+    design_cell = cells[design_col] if design_col < len(cells) else ""
+    row_exempt = file_exempt or _norm(design_cell) == "N/A-logic"
+    if not row_exempt:
+        if _is_empty_cell(design_cell):
+            return "has empty Design-ref"
+        if not _designref_ok(design_cell, spec_dir):
+            return "has unresolvable Design-ref"
+
+    confidence_col = table["confidence_col"]
+    if confidence_col is not None:
+        confidence_cell = cells[confidence_col] if confidence_col < len(cells) else ""
+        if _is_empty_cell(confidence_cell):
+            return "has empty Confidence"
+        if not _is_green_confidence(confidence_cell):
+            restated_col = table["restated_col"]
+            restated_cell = cells[restated_col] if restated_col < len(cells) else ""
+            if _is_empty_cell(restated_cell):
+                return "is not 🟢-confidence but has empty Restated"
+            restated_norm = _norm(restated_cell).lower()
+            if restated_norm in (_norm(design_cell).lower(), _norm(observable_cell).lower()):
+                return "Restated is a copy of Design-ref/Observable, not the human's own words"
+
+    return None
+
+
 def _designref_ok(cell: str, spec_dir: Path) -> bool:
     """D-03 resolvability, NO NETWORK. A `/design/h/<code>` Claude Design
     link is format-checked non-empty ONLY — never curled. A local mockup
@@ -204,11 +325,14 @@ def evaluate_spec(text: str, spec_dir: Path | None = None) -> tuple[bool, str]:
 
     Forked from manifest_gate.py's evaluate_manifest, but locates and checks
     TWO columns per row (Design-ref AND Observable) instead of one, and
-    honors the D-04 visual-exempt flag. `reason` is a short one-line summary:
-    on success a pass summary, on failure the block reason naming the
-    offending row. Linear parse (T-02-01) — no regex, single pass over
-    lines. `spec_dir` anchors relative local Design-ref paths (defaults to
-    the current working directory when not given, e.g. in unit tests).
+    honors the D-04 visual-exempt flag. Grades EVERY behavior table in the
+    file (D-07), not just the first — fails fast at the first violation
+    found in file order, across tables. `reason` is a short one-line
+    summary: on success a pass summary, on failure the block reason naming
+    the offending table + row. Linear parse (T-02-01) — no regex, single
+    pass over lines. `spec_dir` anchors relative local Design-ref paths
+    (defaults to the current working directory when not given, e.g. in
+    unit tests).
     """
     if not text or not text.strip():
         return False, "spec empty"
@@ -217,101 +341,51 @@ def evaluate_spec(text: str, spec_dir: Path | None = None) -> tuple[bool, str]:
         spec_dir = Path(".")
 
     file_exempt = _spec_is_visual_exempt(text)
-
     lines = text.splitlines()
-    n = len(lines)
+    tables = _iter_tables(lines)
 
-    header_idx: int | None = None
-    header_cells: list[str] = []
-    design_col: int | None = None
-    obs_col: int | None = None
-
-    i = 0
-    while i < n:
-        line = lines[i]
-        if _looks_like_table_row(line):
-            cells = _split_row(line)
-            if not _is_separator_row(cells):
-                d_col = _find_col(cells, ("design", "mockup", "design-ref"))
-                o_col = _find_col(cells, ("observable", "assert"))
-                if d_col is not None and o_col is not None:
-                    header_idx = i
-                    header_cells = cells
-                    design_col = d_col
-                    obs_col = o_col
-                    break
-        i += 1
-
-    if header_idx is None or design_col is None or obs_col is None:
+    if not tables:
         return (
             False,
             "no behavior table with resolvable Design-ref and Observable columns found",
         )
 
-    behavior_col = _find_col(header_cells, ("behavior", "hành vi", "hanh vi"))
+    total_rows = 0
+    for table in tables:
+        if table["confidence_col"] is not None and table["restated_col"] is None:
+            return (
+                False,
+                f'{table["label"]}: Confidence column present but no Restated/Human column found (D-06)',
+            )
 
-    # D-06 (opt-in): a Confidence column requires a Restated column too.
-    confidence_col = _find_col(header_cells, CONFIDENCE_NEEDLES)
-    restated_col = _find_col(header_cells, RESTATED_NEEDLES)
-    if confidence_col is not None and restated_col is None:
-        return False, "Confidence column present but no Restated/Human column found (D-06)"
+        behavior_col = table["behavior_col"]
+        table_row_count = 0
+        j = table["row_start"]
+        while j < table["row_end"]:
+            cells = _split_row(lines[j])
+            if _is_separator_row(cells):
+                j += 1
+                continue
+            table_row_count += 1
+            total_rows += 1
 
-    j = header_idx + 1
-    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-        j += 1
+            if behavior_col is not None and behavior_col < len(cells):
+                label = cells[behavior_col]
+            else:
+                label = cells[0] if cells else "?"
 
-    row_count = 0
-    while j < n:
-        line = lines[j]
-        if not _looks_like_table_row(line):
-            break
-        cells = _split_row(line)
-        if _is_separator_row(cells):
+            reason = _check_row(cells, table, spec_dir, file_exempt)
+            if reason is not None:
+                return False, f'{table["label"]} row {table_row_count} ("{label}") {reason}'
+
             j += 1
-            continue
-        row_count += 1
 
-        if behavior_col is not None and behavior_col < len(cells):
-            label = cells[behavior_col]
-        else:
-            label = cells[0] if cells else "?"
-
-        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
-        if _is_empty_cell(observable_cell):
-            return False, f'row {row_count} ("{label}") has empty Observable'
-
-        design_cell = cells[design_col] if design_col < len(cells) else ""
-        row_exempt = file_exempt or _norm(design_cell) == "N/A-logic"
-        if not row_exempt:
-            if _is_empty_cell(design_cell):
-                return False, f'row {row_count} ("{label}") has empty Design-ref'
-            if not _designref_ok(design_cell, spec_dir):
-                return False, f'row {row_count} ("{label}") has unresolvable Design-ref'
-
-        if confidence_col is not None:
-            confidence_cell = cells[confidence_col] if confidence_col < len(cells) else ""
-            if _is_empty_cell(confidence_cell):
-                return False, f'row {row_count} ("{label}") has empty Confidence'
-            if not _is_green_confidence(confidence_cell):
-                restated_cell = cells[restated_col] if restated_col < len(cells) else ""
-                if _is_empty_cell(restated_cell):
-                    return (
-                        False,
-                        f'row {row_count} ("{label}") is not 🟢-confidence but has empty Restated',
-                    )
-                restated_norm = _norm(restated_cell).lower()
-                if restated_norm in (_norm(design_cell).lower(), _norm(observable_cell).lower()):
-                    return (
-                        False,
-                        f'row {row_count} ("{label}") Restated is a copy of Design-ref/Observable, not the human\'s own words',
-                    )
-
-        j += 1
-
-    if row_count == 0:
+    if total_rows == 0:
         return False, "spec has no rows"
 
-    return True, f"{row_count} behavior row(s) verified"
+    if len(tables) == 1:
+        return True, f"{total_rows} behavior row(s) verified"
+    return True, f"{total_rows} behavior row(s) verified across {len(tables)} table(s)"
 
 
 # --------------------------------------------------------------------------
@@ -337,7 +411,7 @@ def applies(text: str) -> bool:
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        if _has_col(cells, ("design", "mockup", "design-ref")) and _has_col(cells, ("observable", "assert")):
+        if _has_col(cells, DESIGN_NEEDLES) and _has_col(cells, OBSERVABLE_NEEDLES):
             return True
     return False
 
@@ -348,90 +422,49 @@ def evaluate(text: str, path: Path | None = None) -> tuple[bool, str]:
 
 
 def findings(text: str, path: Path | None = None) -> list[str]:
-    """ALL failure reasons (empty = pass): one finding per row missing an
-    Observable or a resolvable Design-ref. Mirrors evaluate_spec's per-row
-    precedence (Observable before Design-ref). Backs `check --all`."""
+    """ALL failure reasons (empty = pass) across EVERY behavior table in the
+    file (D-07) — one finding per violating row, prefixed with that row's
+    table label. Mirrors evaluate_spec's per-row precedence (Observable,
+    then Design-ref, then D-06). Backs `check --all`."""
     spec_dir = path.parent if path is not None else Path(".")
     if not text or not text.strip():
         return ["spec empty"]
     file_exempt = _spec_is_visual_exempt(text)
     lines = text.splitlines()
-    n = len(lines)
-
-    header_idx = None
-    header_cells: list[str] = []
-    design_col = obs_col = None
-    i = 0
-    while i < n:
-        if _looks_like_table_row(lines[i]):
-            cells = _split_row(lines[i])
-            if not _is_separator_row(cells):
-                d = _find_col(cells, ("design", "mockup", "design-ref"))
-                o = _find_col(cells, ("observable", "assert"))
-                if d is not None and o is not None:
-                    header_idx, header_cells, design_col, obs_col = i, cells, d, o
-                    break
-        i += 1
-    if header_idx is None:
+    tables = _iter_tables(lines)
+    if not tables:
         return ["no behavior table with resolvable Design-ref and Observable columns found"]
 
-    behavior_col = _find_col(header_cells, ("behavior", "hành vi", "hanh vi"))
-
-    # D-06 (opt-in): a Confidence column requires a Restated column too.
-    confidence_col = _find_col(header_cells, CONFIDENCE_NEEDLES)
-    restated_col = _find_col(header_cells, RESTATED_NEEDLES)
-    if confidence_col is not None and restated_col is None:
-        return ["Confidence column present but no Restated/Human column found (D-06)"]
-
-    j = header_idx + 1
-    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-        j += 1
-
     out: list[str] = []
-    row_count = 0
-    while j < n:
-        if not _looks_like_table_row(lines[j]):
-            break
-        cells = _split_row(lines[j])
-        if _is_separator_row(cells):
-            j += 1
+    total_rows = 0
+    for table in tables:
+        if table["confidence_col"] is not None and table["restated_col"] is None:
+            out.append(f'{table["label"]}: Confidence column present but no Restated/Human column found (D-06)')
             continue
-        row_count += 1
-        if behavior_col is not None and behavior_col < len(cells):
-            label = cells[behavior_col]
-        else:
-            label = cells[0] if cells else "?"
-        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
-        if _is_empty_cell(observable_cell):
-            out.append(f'row {row_count} ("{label}") has empty Observable')
+
+        behavior_col = table["behavior_col"]
+        table_row_count = 0
+        j = table["row_start"]
+        while j < table["row_end"]:
+            cells = _split_row(lines[j])
+            if _is_separator_row(cells):
+                j += 1
+                continue
+            table_row_count += 1
+            total_rows += 1
+
+            if behavior_col is not None and behavior_col < len(cells):
+                label = cells[behavior_col]
+            else:
+                label = cells[0] if cells else "?"
+
+            reason = _check_row(cells, table, spec_dir, file_exempt)
+            if reason is not None:
+                out.append(f'{table["label"]} row {table_row_count} ("{label}") {reason}')
+
             j += 1
-            continue
-        design_cell = cells[design_col] if design_col < len(cells) else ""
-        row_exempt = file_exempt or _norm(design_cell) == "N/A-logic"
-        if not row_exempt:
-            if _is_empty_cell(design_cell):
-                out.append(f'row {row_count} ("{label}") has empty Design-ref')
-            elif not _designref_ok(design_cell, spec_dir):
-                out.append(f'row {row_count} ("{label}") has unresolvable Design-ref')
 
-        if confidence_col is not None:
-            confidence_cell = cells[confidence_col] if confidence_col < len(cells) else ""
-            if _is_empty_cell(confidence_cell):
-                out.append(f'row {row_count} ("{label}") has empty Confidence')
-            elif not _is_green_confidence(confidence_cell):
-                restated_cell = cells[restated_col] if restated_col < len(cells) else ""
-                if _is_empty_cell(restated_cell):
-                    out.append(f'row {row_count} ("{label}") is not 🟢-confidence but has empty Restated')
-                else:
-                    restated_norm = _norm(restated_cell).lower()
-                    if restated_norm in (_norm(design_cell).lower(), _norm(observable_cell).lower()):
-                        out.append(
-                            f'row {row_count} ("{label}") Restated is a copy of Design-ref/Observable, '
-                            "not the human's own words"
-                        )
-        j += 1
-
-    if row_count == 0:
+    if total_rows == 0:
         return ["spec has no rows"]
     return out
 
@@ -458,7 +491,13 @@ CRITICAL — do NOT game the gate: if you cannot name a real Observable, that is
 a blind spot to resolve, not a cell to pad. Never mark a row 🟢 unless you
 can point to the exact source line/screenshot — when unsure, mark 🟡/🔴 so
 the human is forced to weigh in, rather than inflating confidence to skip
-review. Output ONLY the completed markdown spec below."""
+review. Output ONLY the completed markdown spec below.
+
+Master spec covering multiple screens (D-07): you do NOT need one file per
+screen. Repeat the table once per screen/section, each under its own
+markdown heading (e.g. `## Màn 2: report-2 (物件確認)`) — every table is
+graded independently and a failure names the heading it's under, so a
+10-screen master spec still gets full per-screen coverage in one file."""
 
 
 TEMPLATE = """\
