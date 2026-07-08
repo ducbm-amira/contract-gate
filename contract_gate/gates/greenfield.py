@@ -50,6 +50,26 @@ that single row. A blank Design-ref cell is NEVER treated as exempt — the
 exempt flag must be tường minh (explicit), never inferred from omission.
 Observable stays mandatory non-empty regardless of exemption.
 
+D-06 (Confidence + Restated columns, OPT-IN, cognitive-forcing-function):
+the sales-activity-report retro showed this gate catches "AI had no
+source" (a blank cell) but not "a human rubber-stamped a cell they never
+actually verified" — the more expensive failure mode, since the row
+*looks* sourced and ships wrong anyway. If the header carries a Confidence
+column (needle "confidence"/"conf"), the gate additionally requires: (1) a
+Restated/Human column (needle "restated"/"human"/"diễn giải") must also
+exist — a Confidence column with nowhere to put the human's own words is a
+schema error; (2) every row's Confidence cell is non-empty (convention,
+not enforced glyph-by-glyph: 🟢 sourced/certain, 🟡 inferred, 🔴
+unresolved); (3) any row NOT marked 🟢 must carry a non-empty Restated
+cell that is NOT a verbatim copy of that row's Design-ref or Observable
+cell (case-insensitive compare) — forcing the human to state the row's
+meaning in their own words before it counts as reviewed, instead of
+silence/copy-paste passing as agreement. Both columns are OPTIONAL: a spec
+with no Confidence column is graded exactly as before (D-02..D-04 only),
+so no existing spec regresses — this only activates once an author opts in
+by adding the column, which the updated DRAFT_GUIDANCE does automatically
+for freshly drafted specs.
+
 D-01 (format-forgiving parser, mirrors manifest_gate.py's D-05): the
 Design-ref column is located by a case-insensitive substring match against
 the header cell ("design", "mockup", or "design-ref"); the Observable column
@@ -83,6 +103,11 @@ EMPTY_CELL_MARKERS = {"", "-", "—", "–", "ー", "−"}
 # path separator, or it ends in a recognized mockup file extension.
 _LOCAL_DESIGNREF_EXTENSIONS = (".html", ".pdf", ".png", ".jpg", ".jpeg")
 
+# D-06 opt-in columns: needles for header detection + the "certain" marker.
+CONFIDENCE_NEEDLES = ("confidence", "conf")
+RESTATED_NEEDLES = ("restated", "human", "diễn giải", "dien giai")
+_GREEN_MARKER = "🟢"
+
 
 def _norm(cell: str) -> str:
     return cell.strip()
@@ -90,6 +115,17 @@ def _norm(cell: str) -> str:
 
 def _is_empty_cell(cell: str) -> bool:
     return _norm(cell) in EMPTY_CELL_MARKERS
+
+
+def _is_green_confidence(cell: str) -> bool:
+    """D-06: a Confidence cell counts as 🟢 (sourced/certain, no Restated
+    needed) if it carries the green-circle glyph, or the plain words
+    "green"/"ok" for authors who can't type the emoji. Anything else
+    non-empty (🟡, 🔴, prose) is treated as NOT green -> needs Restated."""
+    c = _norm(cell)
+    if not c:
+        return False
+    return _GREEN_MARKER in c or c.lower() in ("green", "ok")
 
 
 def _looks_like_table_row(line: str) -> bool:
@@ -214,6 +250,12 @@ def evaluate_spec(text: str, spec_dir: Path | None = None) -> tuple[bool, str]:
 
     behavior_col = _find_col(header_cells, ("behavior", "hành vi", "hanh vi"))
 
+    # D-06 (opt-in): a Confidence column requires a Restated column too.
+    confidence_col = _find_col(header_cells, CONFIDENCE_NEEDLES)
+    restated_col = _find_col(header_cells, RESTATED_NEEDLES)
+    if confidence_col is not None and restated_col is None:
+        return False, "Confidence column present but no Restated/Human column found (D-06)"
+
     j = header_idx + 1
     if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
         j += 1
@@ -245,6 +287,24 @@ def evaluate_spec(text: str, spec_dir: Path | None = None) -> tuple[bool, str]:
                 return False, f'row {row_count} ("{label}") has empty Design-ref'
             if not _designref_ok(design_cell, spec_dir):
                 return False, f'row {row_count} ("{label}") has unresolvable Design-ref'
+
+        if confidence_col is not None:
+            confidence_cell = cells[confidence_col] if confidence_col < len(cells) else ""
+            if _is_empty_cell(confidence_cell):
+                return False, f'row {row_count} ("{label}") has empty Confidence'
+            if not _is_green_confidence(confidence_cell):
+                restated_cell = cells[restated_col] if restated_col < len(cells) else ""
+                if _is_empty_cell(restated_cell):
+                    return (
+                        False,
+                        f'row {row_count} ("{label}") is not 🟢-confidence but has empty Restated',
+                    )
+                restated_norm = _norm(restated_cell).lower()
+                if restated_norm in (_norm(design_cell).lower(), _norm(observable_cell).lower()):
+                    return (
+                        False,
+                        f'row {row_count} ("{label}") Restated is a copy of Design-ref/Observable, not the human\'s own words',
+                    )
 
         j += 1
 
@@ -316,6 +376,13 @@ def findings(text: str, path: Path | None = None) -> list[str]:
         return ["no behavior table with resolvable Design-ref and Observable columns found"]
 
     behavior_col = _find_col(header_cells, ("behavior", "hành vi", "hanh vi"))
+
+    # D-06 (opt-in): a Confidence column requires a Restated column too.
+    confidence_col = _find_col(header_cells, CONFIDENCE_NEEDLES)
+    restated_col = _find_col(header_cells, RESTATED_NEEDLES)
+    if confidence_col is not None and restated_col is None:
+        return ["Confidence column present but no Restated/Human column found (D-06)"]
+
     j = header_idx + 1
     if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
         j += 1
@@ -346,6 +413,22 @@ def findings(text: str, path: Path | None = None) -> list[str]:
                 out.append(f'row {row_count} ("{label}") has empty Design-ref')
             elif not _designref_ok(design_cell, spec_dir):
                 out.append(f'row {row_count} ("{label}") has unresolvable Design-ref')
+
+        if confidence_col is not None:
+            confidence_cell = cells[confidence_col] if confidence_col < len(cells) else ""
+            if _is_empty_cell(confidence_cell):
+                out.append(f'row {row_count} ("{label}") has empty Confidence')
+            elif not _is_green_confidence(confidence_cell):
+                restated_cell = cells[restated_col] if restated_col < len(cells) else ""
+                if _is_empty_cell(restated_cell):
+                    out.append(f'row {row_count} ("{label}") is not 🟢-confidence but has empty Restated')
+                else:
+                    restated_norm = _norm(restated_cell).lower()
+                    if restated_norm in (_norm(design_cell).lower(), _norm(observable_cell).lower()):
+                        out.append(
+                            f'row {row_count} ("{label}") Restated is a copy of Design-ref/Observable, '
+                            "not the human's own words"
+                        )
         j += 1
 
     if row_count == 0:
@@ -363,10 +446,19 @@ assertion against the real artifact — a DOM check, a network call, a DB row).
   visual, put `N/A-logic` in Design-ref (only when truly visual-exempt).
 - Observable: ALWAYS required — never leave it blank. Phrase it so it can be
   checked automatically ("cell #price shows ¥29,880" beats "price looks right").
+- Confidence + Restated (D-06, always include both columns): mark each row
+  🟢 (you read it straight off the source, no inference) or 🟡/🔴 (you
+  inferred it, or found nothing). For every row NOT marked 🟢, leave the
+  Restated cell for the HUMAN reviewer to fill in their own words — do
+  NOT pre-fill it yourself; a human paraphrase that differs from your
+  Design-ref/Observable text is the whole point (it proves they actually
+  re-derived the row instead of rubber-stamping your draft).
 
 CRITICAL — do NOT game the gate: if you cannot name a real Observable, that is
-a blind spot to resolve, not a cell to pad. Output ONLY the completed markdown
-spec below."""
+a blind spot to resolve, not a cell to pad. Never mark a row 🟢 unless you
+can point to the exact source line/screenshot — when unsure, mark 🟡/🔴 so
+the human is forced to weigh in, rather than inflating confidence to skip
+review. Output ONLY the completed markdown spec below."""
 
 
 TEMPLATE = """\
@@ -374,10 +466,10 @@ TEMPLATE = """\
 
 <!-- visual: none  (uncomment ONLY for a pure-logic spec with no mockup) -->
 
-| # | Behavior | Design-ref | Observable |
-|---|----------|------------|------------|
-| 1 | <what the screen does> | <design link or ./mockup.html> | <runnable assertion> |
-| 2 | <pure-logic behavior>  | N/A-logic | <assertion> |
+| # | Behavior | Design-ref | Observable | Confidence | Restated |
+|---|----------|------------|------------|------------|----------|
+| 1 | <what the screen does> | <design link or ./mockup.html> | <runnable assertion> | 🟢 | |
+| 2 | <pure-logic behavior>  | N/A-logic | <assertion> | 🟡 | <human: what you think this really means, in your own words> |
 """
 
 

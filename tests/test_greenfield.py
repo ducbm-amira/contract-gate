@@ -118,6 +118,58 @@ class GreenfieldGateCLITests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("fail", r.stderr)
 
+    def test_pass_confidence_green_empty_restated_ok(self):
+        """D-06: Confidence column present, every row 🟢 -> Restated may
+        stay empty, still passes."""
+        r = run_gate("--spec", str(FIXTURES / "pass-confidence-green-empty-restated.spec.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("pass", r.stdout)
+
+    def test_pass_confidence_yellow_with_restated(self):
+        """D-06: a 🟡 row with a genuine (non-copied) Restated cell passes."""
+        r = run_gate("--spec", str(FIXTURES / "pass-confidence-yellow-with-restated.spec.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("pass", r.stdout)
+
+    def test_fail_confidence_yellow_empty_restated(self):
+        """D-06: a 🟡/🔴 row with a blank Restated cell -> exit!=0, names
+        the offending row."""
+        r = run_gate("--spec", str(FIXTURES / "fail-confidence-yellow-empty-restated.spec.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("Restated", r.stderr)
+
+    def test_fail_restated_copied_from_observable(self):
+        """D-06: a Restated cell that's a verbatim copy of Design-ref/
+        Observable does not count as the human's own words -> exit!=0."""
+        r = run_gate("--spec", str(FIXTURES / "fail-restated-copied.spec.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("copy", r.stderr)
+
+    def test_fail_confidence_column_without_restated_column(self):
+        """D-06: a Confidence column with no Restated/Human column anywhere
+        is a schema error, rejected before any row is inspected."""
+        r = run_gate("--spec", str(FIXTURES / "fail-confidence-column-no-restated-column.spec.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("D-06", r.stderr)
+
+    def test_fail_empty_confidence(self):
+        """D-06: Confidence column present but a row's Confidence cell is
+        blank -> exit!=0."""
+        r = run_gate("--spec", str(FIXTURES / "fail-empty-confidence.spec.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("Confidence", r.stderr)
+
+    def test_pass_no_confidence_column_is_unaffected(self):
+        """Backward compatibility: specs with no Confidence column at all
+        are graded exactly as before D-06 (already covered by the other
+        pass-* fixtures above, asserted again here for clarity)."""
+        r = run_gate("--spec", str(FIXTURES / "pass-en.spec.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+
     def test_fail_missing_file(self):
         """Path does not exist -> exit!=0, reason 'spec not found'.
         No fixture -- exercised with a nonexistent path per the plan."""

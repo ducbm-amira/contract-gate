@@ -81,7 +81,7 @@ instead of one resolve-recheck cycle at a time.
 | Gate | Question it gates | Status |
 |------|-------------------|--------|
 | **`data-binding`** | Does every DATA element declare a source + null/empty handling? | ✅ shipped |
-| **`greenfield`** | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable per behavior)? | ✅ shipped |
+| **`greenfield`** | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable per behavior)? + opt-in: did a human actually re-derive (not rubber-stamp) every non-🟢 row (D-06)? | ✅ shipped |
 | **`manifest`** | Does a port have a Legacy Behavior Manifest with an observable per behavior? | ✅ shipped |
 | **`golden-record`** | For a real record with a known answer, does the real running app's Actual value match the real DB/API's Expected value? | ✅ shipped |
 | `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
@@ -156,6 +156,15 @@ the reference. Keep it stdlib-only and format-forgiving (no regex, no network).
 - **DP4** — a spec is a hypothesis; pair it with a real oracle. This gate pins
   that a source is *declared*; a golden-record check verifies the wiring is
   *correct*.
+- **DP5** — "AI drafts, human reviews" (DP3) is not enough on its own: a human
+  can review by skimming and still rubber-stamp a row they never really
+  verified (automation bias) — a more expensive failure than a blank `?`,
+  because it *looks* sourced and ships wrong anyway. Where a gate's contract
+  carries real inference (not just declared-or-not), pair AI's citation with
+  a **cognitive forcing function** — make the human restate the row in their
+  own words before it counts as reviewed, so silence/copy-paste stops
+  passing as agreement. See `greenfield`'s opt-in Confidence/Restated columns
+  (D-06 in [`contract_gate/gates/greenfield.py`](contract_gate/gates/greenfield.py)).
 
 Full requirement history: [`docs/TOOL-REQUIREMENTS.md`](docs/TOOL-REQUIREMENTS.md).
 The `examples/` folder is one complete pre-coding pass on a real task.

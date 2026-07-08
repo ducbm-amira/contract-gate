@@ -52,6 +52,7 @@ Spec ghi "giá ← sale_.price" là HYPOTHESIS, chưa chắc đúng. Cách BIẾ
 - **DP2 — Ưu tiên dạng THỰC THI (test) hơn văn xuôi.** Spec chi tiết ≈ testcase — nhưng test **tự kiểm**, còn văn xuôi thì người phải kiểm tay. Với phần logic, tool nên đẩy contract thành TEST, không phải prose.
 - **DP3 — Doc-time phải NHỎ + NET-saving.** 20 phút spec chỗ-mù < 3h debug (bài port-preflight: 3 commit rework). Nhưng chỉ đúng nếu spec đúng-chỗ + để **AI draft** map/test (người review), không gõ tay. Nếu tool làm doc-time phình = tool thất bại.
 - **DP4 — Spec là hypothesis, phải verify vs reality.** "Code đúng theo spec" ≠ "đúng thật" — spec có thể sai. Luôn cặp spec với 1 oracle thật (golden record / test / browser).
+- **DP5 — "AI draft, human review" (DP3) chưa đủ nếu review chỉ là skim-rồi-gật.** Người có thể duyệt qua loa 1 cell chưa thực sự kiểm — automation bias, đắt hơn cả 1 ô `?` bỏ trống vì nó TRÔNG như đã có nguồn nhưng sai. Ở đâu contract có phần AI suy luận thật (không chỉ khai-có/không), phải kèm 1 **cognitive forcing function**: bắt người diễn giải lại bằng lời mình trước khi cell đó tính là đã review, để im lặng/copy-paste không còn tính là đồng ý. Rút ra từ retro task 売却活動報告書 (xem `greenfield` gate, cột Confidence+Restated opt-in, D-06).
 
 ---
 
