@@ -44,6 +44,25 @@ T-02-01 (DoS mitigation): the parser is a linear, line-by-line scan using
 only str.split("|") — no regex, hence no catastrophic-backtracking surface.
 A >=5000-row / pathological input completes in well under 1s.
 
+D-07 (multi-table files — loop, don't stop at the first; ported from the
+identical fix in greenfield.py, same original bug): a manifest file may
+hold MORE THAN ONE behavior table — e.g. one master manifest covering
+several legacy pages/components being ported together, one table per
+`## Page` section. Before this fix the gate located only the FIRST table
+with an Observable column, graded its rows, and silently stopped: an
+empty Observable in a LATER table was never seen and the file still
+reported `pass` (reproduced 2026-07-09: a 2-page demo manifest with page
+2's Observable left blank reported "pass 1 behavior row(s) verified",
+counting only page 1's row — a false PASS). Fixed: `_iter_tables()` scans
+the WHOLE file and returns every table it finds, in order, each with its
+own resolved Observable/Behavior column indices (tables need not share a
+layout) and its own [row_start, row_end) line range. evaluate_manifest
+still fails fast (stops at the first violation, across tables in file
+order); findings() collects violations from ALL tables for `check --all`.
+A table's failure reason is prefixed by the nearest preceding markdown
+heading (e.g. "Page 2: /detail"), or `table N` (1-based discovery order)
+when no heading precedes it.
+
 Usage:
     python3 manifest_gate.py --manifest <path/to/route.manifest.md>
     python3 manifest_gate.py --repo <sdd-repo> --route <route>
@@ -111,69 +130,109 @@ def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
     return None
 
 
-def evaluate_manifest(text: str) -> tuple[bool, str]:
-    """Core D-04 verdict over manifest text. Returns (ok, reason).
+OBSERVABLE_NEEDLES = ("observable", "oracle")
+BEHAVIOR_NEEDLES = ("hành vi", "behavior")
 
-    `reason` is a short one-line human-readable summary: on success a pass
-    summary, on failure the block reason (D-03). Linear parse (T-02-01) —
-    no regex, single pass over lines.
-    """
-    if not text or not text.strip():
-        return False, "manifest empty"
 
-    lines = text.splitlines()
+def _nearest_heading(lines: list[str], idx: int) -> str | None:
+    """D-07: label a table by the nearest preceding markdown heading
+    (`#`.."######" + text) above line `idx`, stripped of the leading `#`s
+    -- gives readable per-table failure reasons in a multi-page master
+    manifest (e.g. "Page 2: /detail"). None if nothing precedes it."""
+    i = idx - 1
+    while i >= 0:
+        s = lines[i].strip()
+        if s.startswith("#"):
+            return s.lstrip("#").strip()
+        i -= 1
+    return None
+
+
+def _iter_tables(lines: list[str]) -> list[dict]:
+    """D-07: locate EVERY behavior table in the file, not just the first.
+    Each descriptor carries its own resolved Observable/Behavior column
+    indices (tables need not share a layout) plus the [row_start, row_end)
+    line range of its body rows. Linear single pass (T-02-01 preserved):
+    once a table's body is found, the scan jumps straight past it."""
     n = len(lines)
-
-    header_idx: int | None = None
-    header_cells: list[str] = []
-    obs_col: int | None = None
-
+    tables: list[dict] = []
     i = 0
     while i < n:
         line = lines[i]
         if _looks_like_table_row(line):
             cells = _split_row(line)
             if not _is_separator_row(cells):
-                col = _find_col(cells, ("observable", "oracle"))
+                col = _find_col(cells, OBSERVABLE_NEEDLES)
                 if col is not None:
                     header_idx = i
                     header_cells = cells
-                    obs_col = col
-                    break
+                    j = header_idx + 1
+                    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
+                        j += 1
+                    row_start = j
+                    while j < n and _looks_like_table_row(lines[j]):
+                        j += 1
+                    tables.append(
+                        {
+                            "label": _nearest_heading(lines, header_idx) or f"table {len(tables) + 1}",
+                            "obs_col": col,
+                            "behavior_col": _find_col(header_cells, BEHAVIOR_NEEDLES),
+                            "row_start": row_start,
+                            "row_end": j,
+                        }
+                    )
+                    i = j
+                    continue
         i += 1
+    return tables
 
-    if header_idx is None or obs_col is None:
+
+def evaluate_manifest(text: str) -> tuple[bool, str]:
+    """Core D-04 verdict over manifest text. Returns (ok, reason).
+
+    Grades EVERY behavior table in the file (D-07), not just the first —
+    fails fast at the first violation found in file order, across tables.
+    `reason` is a short one-line human-readable summary: on success a pass
+    summary, on failure the block reason (D-03) naming the offending table
+    + row. Linear parse (T-02-01) — no regex, single pass over lines.
+    """
+    if not text or not text.strip():
+        return False, "manifest empty"
+
+    lines = text.splitlines()
+    tables = _iter_tables(lines)
+
+    if not tables:
         return False, "no behavior table with a resolvable Observable column found"
 
-    behavior_col = _find_col(header_cells, ("hành vi", "behavior"))
-
-    j = header_idx + 1
-    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-        j += 1
-
-    row_count = 0
-    while j < n:
-        line = lines[j]
-        if not _looks_like_table_row(line):
-            break
-        cells = _split_row(line)
-        if _is_separator_row(cells):
+    total_rows = 0
+    for table in tables:
+        obs_col = table["obs_col"]
+        behavior_col = table["behavior_col"]
+        table_row_count = 0
+        j = table["row_start"]
+        while j < table["row_end"]:
+            cells = _split_row(lines[j])
+            if _is_separator_row(cells):
+                j += 1
+                continue
+            table_row_count += 1
+            total_rows += 1
+            observable_cell = cells[obs_col] if obs_col < len(cells) else ""
+            if _is_empty_observable(observable_cell):
+                if behavior_col is not None and behavior_col < len(cells):
+                    label = cells[behavior_col]
+                else:
+                    label = cells[0] if cells else "?"
+                return False, f'{table["label"]} row {table_row_count} ("{label}") has empty Observable'
             j += 1
-            continue
-        row_count += 1
-        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
-        if _is_empty_observable(observable_cell):
-            if behavior_col is not None and behavior_col < len(cells):
-                label = cells[behavior_col]
-            else:
-                label = cells[0] if cells else "?"
-            return False, f'row {row_count} ("{label}") has empty Observable'
-        j += 1
 
-    if row_count == 0:
+    if total_rows == 0:
         return False, "behavior table has no rows"
 
-    return True, f"{row_count} behavior row(s) verified"
+    if len(tables) == 1:
+        return True, f"{total_rows} behavior row(s) verified"
+    return True, f"{total_rows} behavior row(s) verified across {len(tables)} table(s)"
 
 
 # --------------------------------------------------------------------------
@@ -195,7 +254,7 @@ def applies(text: str) -> bool:
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        has_obs = _find_col(cells, ("observable", "oracle")) is not None
+        has_obs = _find_col(cells, OBSERVABLE_NEEDLES) is not None
         has_design = _find_col(cells, ("design", "mockup", "design-ref")) is not None
         if has_obs and not has_design:
             return True
@@ -208,54 +267,41 @@ def evaluate(text: str, path: Path | None = None) -> tuple[bool, str]:
 
 
 def findings(text: str, path: Path | None = None) -> list[str]:
-    """ALL failure reasons (empty = pass): one finding per behavior row with an
-    empty Observable. Mirrors evaluate_manifest. Backs `check --all`."""
+    """ALL failure reasons (empty = pass) across EVERY behavior table in the
+    file (D-07) — one finding per row with an empty Observable, prefixed
+    with that row's table label. Mirrors evaluate_manifest. Backs
+    `check --all`."""
     if not text or not text.strip():
         return ["manifest empty"]
     lines = text.splitlines()
-    n = len(lines)
-
-    header_idx = None
-    header_cells: list[str] = []
-    obs_col = None
-    i = 0
-    while i < n:
-        if _looks_like_table_row(lines[i]):
-            cells = _split_row(lines[i])
-            if not _is_separator_row(cells):
-                col = _find_col(cells, ("observable", "oracle"))
-                if col is not None:
-                    header_idx, header_cells, obs_col = i, cells, col
-                    break
-        i += 1
-    if header_idx is None:
+    tables = _iter_tables(lines)
+    if not tables:
         return ["no behavior table with a resolvable Observable column found"]
 
-    behavior_col = _find_col(header_cells, ("hành vi", "behavior"))
-    j = header_idx + 1
-    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-        j += 1
-
     out: list[str] = []
-    row_count = 0
-    while j < n:
-        if not _looks_like_table_row(lines[j]):
-            break
-        cells = _split_row(lines[j])
-        if _is_separator_row(cells):
+    total_rows = 0
+    for table in tables:
+        obs_col = table["obs_col"]
+        behavior_col = table["behavior_col"]
+        table_row_count = 0
+        j = table["row_start"]
+        while j < table["row_end"]:
+            cells = _split_row(lines[j])
+            if _is_separator_row(cells):
+                j += 1
+                continue
+            table_row_count += 1
+            total_rows += 1
+            observable_cell = cells[obs_col] if obs_col < len(cells) else ""
+            if _is_empty_observable(observable_cell):
+                if behavior_col is not None and behavior_col < len(cells):
+                    label = cells[behavior_col]
+                else:
+                    label = cells[0] if cells else "?"
+                out.append(f'{table["label"]} row {table_row_count} ("{label}") has empty Observable')
             j += 1
-            continue
-        row_count += 1
-        observable_cell = cells[obs_col] if obs_col < len(cells) else ""
-        if _is_empty_observable(observable_cell):
-            if behavior_col is not None and behavior_col < len(cells):
-                label = cells[behavior_col]
-            else:
-                label = cells[0] if cells else "?"
-            out.append(f'row {row_count} ("{label}") has empty Observable')
-        j += 1
 
-    if row_count == 0:
+    if total_rows == 0:
         return ["behavior table has no rows"]
     return out
 
@@ -273,7 +319,12 @@ ports drop). Every row MUST have a non-empty Observable.
 
 CRITICAL — do NOT game the gate: an Observable you cannot state concretely is a
 behavior you have not understood yet; go read the legacy, do not pad the cell.
-Output ONLY the completed markdown manifest below."""
+Output ONLY the completed markdown manifest below.
+
+Master manifest covering multiple pages/components (D-07): you do NOT need
+one file per page. Repeat the table once per page/component, each under its
+own markdown heading (e.g. `## Page 2: /detail`) — every table is graded
+independently and a failure names the heading it's under."""
 
 
 TEMPLATE = """\

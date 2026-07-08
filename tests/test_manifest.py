@@ -83,6 +83,23 @@ class ManifestGateCLITests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("fail", r.stderr)
 
+    def test_pass_multi_table_master_manifest(self):
+        """D-07: a master manifest with 2 page-sections, each its own table,
+        both valid -> pass, counting rows from BOTH tables."""
+        r = run_gate("--manifest", str(FIXTURES / "pass-multi-table-master-manifest.manifest.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("pass", r.stdout)
+        self.assertIn("2 behavior row(s) verified across 2 table(s)", r.stdout)
+
+    def test_fail_multi_table_violation_in_later_table_not_missed(self):
+        """D-07 regression guard: an empty Observable in the SECOND table of
+        a multi-table master manifest must fail the gate (not be silently
+        skipped because table 1 already passed) -- names the page heading."""
+        r = run_gate("--manifest", str(FIXTURES / "fail-multi-table-second-table-violation.manifest.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("Page 2", r.stderr)
+
     def test_fail_missing_file(self):
         """Path does not exist -> exit!=0, reason 'manifest not found'.
         No fixture -- exercised with a nonexistent path per the plan."""
@@ -141,6 +158,15 @@ class ManifestGateParserUnitTests(unittest.TestCase):
     def test_empty_string_fails(self):
         ok, _reason = manifest_gate.evaluate_manifest("")
         self.assertFalse(ok)
+
+    def test_findings_all_report_every_table_not_just_first(self):
+        """D-07 + `--all`: findings() must surface a violation from a LATER
+        table, not stop after the first table's rows are exhausted."""
+        path = FIXTURES / "fail-multi-table-second-table-violation.manifest.md"
+        text = path.read_text(encoding="utf-8")
+        out = manifest_gate.findings(text, path)
+        self.assertEqual(len(out), 1, msg=f"expected 1 finding (page 2's row), got: {out}")
+        self.assertIn("Page 2", out[0])
 
 
 if __name__ == "__main__":
