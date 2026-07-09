@@ -85,7 +85,7 @@ instead of one resolve-recheck cycle at a time.
 | **`manifest`** | Does a port have a Legacy Behavior Manifest with an observable per behavior? | ✅ shipped |
 | **`golden-record`** | For a real record with a known answer, does the real running app's Actual value match the real DB/API's Expected value? | ✅ shipped |
 | **`fidelity`** | Does every screen pinned in a fidelity contract have an already-run [`design-fidelity-gate`](https://github.com/ducbm-amira/design-fidelity-gate) bucketed report whose `overall` verdict is PASS? | ✅ shipped |
-| `testgen` | Does a spec/design have an RTM of test cases with an oracle per behavior? | ⏳ planned |
+| **`testgen`** | Does every RTM row trace to a Requirement/Behavior and carry a real (or honestly-`?`) Expected/Oracle? | ✅ shipped |
 
 `data-binding`/`greenfield`/`manifest` gate that a contract is *declared*
 before code is written. `golden-record` and `fidelity` are a different kind
@@ -120,6 +120,21 @@ self-discover and self-fail:
 python -m verdict --screen deal-map --out cache/_reports/deal-map.report.json  # design-fidelity-gate, run first
 contract-gate check .                                                          # then gate it
 ```
+
+### `testgen` — the odd one out: usually draft-inferable
+
+`testgen` is the mid-code test-coverage gate: an RTM (Requirements
+Traceability Matrix) where every row traces to a Requirement/Behavior and
+carries a real Expected/Oracle, derived with formal test-design technique
+(EP/BVA/decision tables/state-transition/pairwise — the `senior-qa`
+discipline, baked into `draft --gate testgen`'s guidance as portable prose).
+Unlike `golden-record`/`fidelity`, where `?` is expected far more often than
+not, here the spec/design usually DOES pin the correct behavior — so `?` in
+Expected is the exception, reserved for a genuine spec gap, not a default.
+A real RTM file is named `<task>.testgen.md` (not `.testgen.contract.md`,
+same self-collision guard as `fidelity`). See
+[`contract_gate/gates/testgen.py`](contract_gate/gates/testgen.py)
+(RTM-01..07).
 
 ## `draft` — drafting the contract (the adoption unlock)
 
