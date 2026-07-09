@@ -79,6 +79,36 @@ the data" bug this gate exists to catch. DRAFT_GUIDANCE below is written to
 make that failure mode explicit and instructs marking both columns `?`
 unless real queried/observed data is available in --source.
 
+GOLD-06 (header-needle collision guard — real bug, found 2026-07-09 while
+adding `fidelity.py`/`testgen.py`): `_find_col` originally matched a needle
+list against a header cell with no memory of columns already claimed by an
+earlier field. TEMPLATE's own header —
+`Expected (DB thật, viết đúng dạng hiển thị)` — contains the VN substring
+"hiển thị", which is also an ACTUAL_NEEDLES entry (VN for "displayed"); a
+bare left-to-right `_find_col(header, ACTUAL_NEEDLES)` therefore resolved
+`actual_col` to the *Expected* column instead of the real `Actual (UI thật)`
+column next to it, silently comparing Expected against itself. This is why
+`evaluate_map(TEMPLATE)` reported `pass` even though TEMPLATE's real Expected
+and Actual cells hold deliberately DIFFERENT placeholder text — a false PASS
+nobody had actually verified. Fixed: `_find_col` now takes an `exclude` set
+of column indices already claimed by another field, and columns are
+resolved in priority order — expected_col, then actual_col (excluding
+expected_col), then record_col/field_col/edge_col (excluding both) — so no
+two fields can ever silently resolve to the same column.
+
+GOLD-07 (GLOBS narrowed, no bare-substring catch-all — mirrors manifest.py/
+greenfield.py, and the same fix later applied to fidelity.py's FID-08/
+testgen.py's RTM-07): `*golden-record*.md`/`*GOLDEN-RECORD*.md` matched
+`contract-gate init`'s own scaffold filename
+(`example.golden-record.contract.md`) as a bare substring. Once GOLD-06
+made comparison correct, that self-match would have made the scaffold
+self-FAIL (TEMPLATE's Expected != Actual, for real this time) instead of
+the accidental self-pass it had before. Removed those two broad globs,
+keeping only the suffix-anchored `*.goldenrecord.md` / `*.golden-record.md`
+— neither matches `...contract.md`, so a real golden-record file must be
+named `<screen>.goldenrecord.md` or `<screen>.golden-record.md`, not
+`<screen>.golden-record.contract.md`.
+
 Usage:
     python3 golden_record.py --map <path/to/golden-record.md>
     python3 golden_record.py --repo <target-repo> --task <task>
@@ -164,8 +194,15 @@ def _is_separator_row(cells: list[str]) -> bool:
     return saw_dash
 
 
-def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
+def _find_col(
+    header_cells: list[str], needles: tuple[str, ...], exclude: frozenset[int] = frozenset()
+) -> int | None:
+    """First column matching any needle, skipping indices already claimed by
+    another field (GOLD-06) — prevents two fields silently resolving to the
+    same column when their needle lists share a substring."""
     for i, cell in enumerate(header_cells):
+        if i in exclude:
+            continue
         low = cell.lower()
         if any(needle in low for needle in needles):
             return i
@@ -224,16 +261,25 @@ def _analyze(text: str) -> tuple[list[str], str]:
             i += 1
             continue
 
+        # GOLD-06: resolve in priority order, each excluding columns already
+        # claimed — expected/actual are the load-bearing pair (compared for
+        # equality) so they're resolved first and mutually exclusive.
         expected_col = _find_col(header_cells, EXPECTED_NEEDLES)
-        actual_col = _find_col(header_cells, ACTUAL_NEEDLES)
+        actual_col = _find_col(
+            header_cells, ACTUAL_NEEDLES,
+            exclude=frozenset({expected_col}) if expected_col is not None else frozenset(),
+        )
         if expected_col is None or actual_col is None:
             i = _skip_table_body(lines, i + 1, n)
             continue
 
         qualifying_tables += 1
-        record_col = _find_col(header_cells, RECORD_NEEDLES)
-        field_col = _find_col(header_cells, FIELD_NEEDLES)
-        edge_col = _find_col(header_cells, EDGECASE_NEEDLES)
+        claimed = frozenset({expected_col, actual_col})
+        record_col = _find_col(header_cells, RECORD_NEEDLES, exclude=claimed)
+        claimed = claimed | (frozenset({record_col}) if record_col is not None else frozenset())
+        field_col = _find_col(header_cells, FIELD_NEEDLES, exclude=claimed)
+        claimed = claimed | (frozenset({field_col}) if field_col is not None else frozenset())
+        edge_col = _find_col(header_cells, EDGECASE_NEEDLES, exclude=claimed)
 
         j = i + 1
         if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
@@ -317,20 +363,25 @@ def findings(text: str, path: Path | None = None) -> list[str]:
 
 KEY = "golden-record"
 TITLE = "Golden-record data verification"
-GLOBS = ("*.goldenrecord.md", "*.golden-record.md", "*GOLDEN-RECORD*.md", "*golden-record*.md", "*.contract.md")
+# GOLD-07: narrow on purpose — no bare-substring/"*.contract.md" catch-all.
+GLOBS = ("*.goldenrecord.md", "*.golden-record.md")
 
 
 def contains_golden_record_table(text: str) -> bool:
     """True iff `text` has at least one qualifying table (header with BOTH an
-    Expected and an Actual column) — lets the CLI skip files that merely
-    share a generic name but hold a different kind of contract."""
+    Expected and a DISTINCT Actual column) — lets the CLI skip files that
+    merely share a generic name but hold a different kind of contract."""
     for line in _extract_scope(text).splitlines():
         if not _looks_like_table_row(line):
             continue
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        if _find_col(cells, EXPECTED_NEEDLES) is not None and _find_col(cells, ACTUAL_NEEDLES) is not None:
+        expected_col = _find_col(cells, EXPECTED_NEEDLES)
+        if expected_col is None:
+            continue
+        actual_col = _find_col(cells, ACTUAL_NEEDLES, exclude=frozenset({expected_col}))
+        if actual_col is not None:
             return True
     return False
 

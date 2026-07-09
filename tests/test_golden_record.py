@@ -155,6 +155,48 @@ class GoldenRecordGateCLITests(unittest.TestCase):
                 msg=f"non-stdlib-looking import found: {line!r}",
             )
 
+    def test_pass_header_needle_collision_with_real_match(self):
+        """GOLD-06 regression: Expected's own header text contains "hiển
+        thị" (an ACTUAL_NEEDLES entry) -> actual_col must resolve to the
+        REAL Actual column, not fall back onto Expected's own column."""
+        r = run_gate("--map", str(FIXTURES / "pass-header-collision.map.md"))
+        self.assertEqual(r.returncode, 0, msg=f"stdout={r.stdout!r} stderr={r.stderr!r}")
+        self.assertIn("pass", r.stdout)
+
+    def test_fail_header_needle_collision_with_real_mismatch(self):
+        """GOLD-06 regression: same tricky header, but Expected != Actual for
+        real -> must FAIL naming both real values. Before the fix this
+        silently PASSED (actual_col pointed back at Expected, comparing it
+        to itself)."""
+        r = run_gate("--map", str(FIXTURES / "fail-header-collision-mismatch.map.md"))
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("fail", r.stderr)
+        self.assertIn("29,880,000", r.stderr)
+        self.assertIn("30,000,000", r.stderr)
+
+    def test_globs_do_not_match_init_scaffold_filename(self):
+        """GOLD-07 regression: contract-gate init writes
+        example.golden-record.contract.md — GLOBS must NOT match it (would
+        make the gate self-discover its own no-real-report-yet scaffold and
+        self-fail), mirroring manifest.py/greenfield.py's narrow GLOBS."""
+        import fnmatch
+        scaffold_name = "example.golden-record.contract.md"
+        for pattern in golden_record_gate.GLOBS:
+            self.assertFalse(
+                fnmatch.fnmatch(scaffold_name, pattern),
+                msg=f"GLOBS pattern {pattern!r} matches the init scaffold filename",
+            )
+
+    def test_template_itself_is_not_a_silent_false_pass(self):
+        """GOLD-06 regression: TEMPLATE's own Expected/Actual placeholder
+        cells are deliberately DIFFERENT text (an unfilled scaffold, not a
+        real match) -> evaluate_map(TEMPLATE) must report a real mismatch,
+        not a false pass from the header-needle collision."""
+        ok, reason = golden_record_gate.evaluate_map(golden_record_gate.TEMPLATE)
+        self.assertFalse(ok)
+        self.assertIn("expected", reason)
+        self.assertIn("actual", reason)
+
 
 class GoldenRecordGateParserUnitTests(unittest.TestCase):
     """Exercise evaluate_map() directly -- fast, precise, perf/ReDoS guard."""
