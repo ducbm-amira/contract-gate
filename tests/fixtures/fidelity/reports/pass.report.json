@@ -1,0 +1,8 @@
+{
+  "overall": "PASS",
+  "buckets": {
+    "color": {"verdict": "PASS", "findings": []},
+    "size": {"verdict": "PASS", "findings": []}
+  },
+  "findings": []
+}

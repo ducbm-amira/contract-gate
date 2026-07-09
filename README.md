@@ -84,18 +84,42 @@ instead of one resolve-recheck cycle at a time.
 | **`greenfield`** | Does a design+spec task carry a 2-layer oracle (Design-ref + Observable per behavior)? + opt-in: did a human actually re-derive (not rubber-stamp) every non-🟢 row (D-06)? | ✅ shipped |
 | **`manifest`** | Does a port have a Legacy Behavior Manifest with an observable per behavior? | ✅ shipped |
 | **`golden-record`** | For a real record with a known answer, does the real running app's Actual value match the real DB/API's Expected value? | ✅ shipped |
-| `gap-qa` | Is the gap-audit structurally complete (buckets, lenses, per-item decision)? | ⏳ planned |
+| **`fidelity`** | Does every screen pinned in a fidelity contract have an already-run [`design-fidelity-gate`](https://github.com/ducbm-amira/design-fidelity-gate) bucketed report whose `overall` verdict is PASS? | ✅ shipped |
+| `testgen` | Does a spec/design have an RTM of test cases with an oracle per behavior? | ⏳ planned |
 
 `data-binding`/`greenfield`/`manifest` gate that a contract is *declared*
-before code is written. `golden-record` is a different kind of gate: it
-verifies a declared source is *actually correct* against reality — one real
-record, queried straight from the DB/API (Expected) checked against what the
-real running app displays for it (Actual). Nothing here drives a browser or
-a DB itself (that would break the zero-dep, agent-agnostic contract); a
-human or agent captures both values, this gate only checks they were
-captured and that they agree. See
+before code is written. `golden-record` and `fidelity` are a different kind
+of gate: they verify a declared contract is *actually correct/matching*
+against reality. `golden-record` checks one real record, queried straight
+from the DB/API (Expected), against what the real running app displays for
+it (Actual). `fidelity` checks that a screen's build actually matches its
+design — but delegates the pixel/token comparison itself to
+`design-fidelity-gate` (a separate tool with its own Playwright/pixelmatch/
+coloraide dependency stack); this gate only grades the bucketed report JSON
+that tool already wrote, the same way `golden-record` only grades values a
+human/agent already captured. Nothing here drives a browser, a DB, or a
+pixel-diff itself (that would break the zero-dep, agent-agnostic contract
+and just relocate the "trust me" problem). See
 [`contract_gate/gates/golden_record.py`](contract_gate/gates/golden_record.py)
-for the full rationale (GOLD-01..05).
+(GOLD-01..05) and
+[`contract_gate/gates/fidelity.py`](contract_gate/gates/fidelity.py)
+(FID-01..08) for the full rationale.
+
+A real fidelity contract is named `<screen>.fidelity.md` (e.g.
+`deal-map.fidelity.md`) — deliberately NOT `*.contract.md`, so a fresh
+`contract-gate init` scaffold (which has no real report yet) doesn't
+self-discover and self-fail:
+
+```markdown
+| Screen | Report |
+|--------|--------|
+| deal-map | cache/_reports/deal-map.report.json |
+```
+
+```bash
+python -m verdict --screen deal-map --out cache/_reports/deal-map.report.json  # design-fidelity-gate, run first
+contract-gate check .                                                          # then gate it
+```
 
 ## `draft` — drafting the contract (the adoption unlock)
 

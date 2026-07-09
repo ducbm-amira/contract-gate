@@ -1,0 +1,8 @@
+{
+  "overall": "FAIL",
+  "buckets": {
+    "color": {"verdict": "FAIL", "findings": [{"rule_id": "TOKEN-COLOR-001"}]},
+    "size": {"verdict": "PASS", "findings": []}
+  },
+  "findings": [{"rule_id": "TOKEN-COLOR-001"}]
+}
