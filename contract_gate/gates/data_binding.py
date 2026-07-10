@@ -401,8 +401,8 @@ TEMPLATE = """\
 <!-- data-binding:start -->
 | Screen | Element | Type | Source (API/field/computed) | API cũ/mới | Format | Null/empty |
 |--------|---------|------|------------------------------|-----------|--------|------------|
-| <screen> | <field name> | data | `GET /x` → `obj.field` | existing | raw | "-" if null |
-| <screen> | <field cần BE> | data | `POST /new-endpoint` → `y` | new | raw | "-" if null |
+| <screen> | <field name> | data | <GET /x → obj.field> | <existing hay new> | <raw / 万円> | <"-" nếu null> |
+| <screen> | <field cần BE> | data | <POST /new-endpoint → y> | new | <raw> | <"-" nếu null> |
 | <screen> | <heading>    | title |                        |           |        |            |
 <!-- data-binding:end -->
 """

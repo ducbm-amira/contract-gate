@@ -10,7 +10,7 @@ gate, and returns one verdict + exit code. Drop it into CI, a pre-commit hook,
 or an agent's pre-BUILD step.
 
 ```bash
-contract-gate check .        # exit 0 = all contracts sound, exit 1 = a gap
+contract-gate check .        # exit 0 = all contracts sound, 1 = a gap, 2 = blocked
 ```
 
 ## The loop
@@ -53,10 +53,16 @@ bare `python3` in any CI with no build chain.
 ## Quickstart
 
 ```bash
-contract-gate init .          # scaffold example.<gate>.contract.md templates
-$EDITOR example.data-binding.contract.md   # fill in the blind spots
+contract-gate init .          # scaffold example.<gate>.md templates (one per gate)
+$EDITOR example.data-binding.md            # fill in the blind spots
 contract-gate check .         # gate them
 ```
+
+Freshly scaffolded templates **fail** `check` on purpose — they are full of
+`<placeholders>`, and an unfilled contract is a todo, not a pass. Each scaffold
+is named so the owning gate's GLOBS actually discover it; keep that suffix
+(`.manifest.md`, `.spec.md`, `.golden-record.md`, …) when you rename it for a
+real task, or no gate will own the file (`check` warns about such orphans).
 
 Or let your agent draft it from the source material, then gate the result:
 
@@ -70,11 +76,21 @@ contract-gate check .
 `check` autodiscovers files named `*.contract.md` / `*.databinding.md` (and a
 few conventional variants), runs every gate that *owns* the file (a gate skips
 files it doesn't recognize — it never fails someone else's contract), and prints
-a unified pass/fail with a one-line reason per contract. Exit `1` if any gate
-fails, `0` otherwise. `--format json` for machine output. Add `--all` to list
-**every** finding per contract at once (default stops at the first per file) —
-useful when a fresh contract has many blind spots and you want them all up front
-instead of one resolve-recheck cycle at a time.
+a unified pass/fail with a one-line reason per contract. Files a glob matched
+but **no** gate claimed are listed as `warn` lines (never silently dropped).
+`check <file>` grades that one file directly — if no gate claims an explicitly
+named file, that's exit `1` with a diagnosis, not silence.
+
+Exit codes: `0` = every graded contract passed (or a directory scan found
+nothing to gate); `1` = a contract failed, or an explicit file argument was
+claimed by no gate; `2` = **blocked** — a file couldn't be read/decoded or a
+gate crashed, so the verdict must not be trusted as either pass or fail.
+
+`--format json` emits `{"results": [...], "warnings": [...]}` where each
+result carries `gate` / `file` / `pass` / `blocked` / `reason`. Add `--all` to
+list **every** finding per contract at once (default stops at the first per
+file) — useful when a fresh contract has many blind spots and you want them
+all up front instead of one resolve-recheck cycle at a time.
 
 ## Gates
 
@@ -175,7 +191,7 @@ Live example: [`examples/DATA-BINDING.md`](examples/DATA-BINDING.md).
 ## Use in CI
 
 ```yaml
-- run: pipx run contract-gate check .   # fails the job on exit 1
+- run: pipx run contract-gate check .   # fails the job on exit 1 (gap) or 2 (blocked)
 ```
 
 ## Add a gate
