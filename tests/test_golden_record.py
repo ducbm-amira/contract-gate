@@ -188,14 +188,14 @@ class GoldenRecordGateCLITests(unittest.TestCase):
             )
 
     def test_template_itself_is_not_a_silent_false_pass(self):
-        """GOLD-06 regression: TEMPLATE's own Expected/Actual placeholder
-        cells are deliberately DIFFERENT text (an unfilled scaffold, not a
-        real match) -> evaluate_map(TEMPLATE) must report a real mismatch,
-        not a false pass from the header-needle collision."""
+        """GOLD-06 regression, updated for the shared empty-cell rule: the
+        TEMPLATE's whole-cell `<...>` scaffold placeholders now count as
+        UNFILLED, so an untouched scaffold fails on its unpinned Expected
+        (an even earlier, clearer failure than the old mismatch) — never a
+        false pass from the header-needle collision."""
         ok, reason = golden_record_gate.evaluate_map(golden_record_gate.TEMPLATE)
         self.assertFalse(ok)
-        self.assertIn("expected", reason)
-        self.assertIn("actual", reason)
+        self.assertIn("no Expected value", reason)
 
 
 class GoldenRecordGateParserUnitTests(unittest.TestCase):
@@ -227,15 +227,56 @@ class GoldenRecordGateParserUnitTests(unittest.TestCase):
         ok, reason = golden_record_gate.evaluate_map(text)
         self.assertTrue(ok, msg=reason)
 
-    def test_zero_qualifying_rows_impossible_but_no_table_fails(self):
-        """A table with headers only (no body rows) still yields a pass
-        summary of 0 records — nothing to contradict, but also nothing
-        proven; documented as current behavior (an empty table is not the
-        same failure as a missing table)."""
+    def test_header_only_table_fails(self):
+        """F7 (2026-07-11, reverses the previously-documented behavior): a
+        header-only table used to PASS with '0 golden record(s) verified' —
+        nothing proven reading as success was trivially gameable (submit
+        just the header). It now fails loudly, aligned with manifest/
+        greenfield's no-rows rule."""
         text = "| Record | Field | Expected | Actual |\n|--|--|--|--|\n"
         ok, reason = golden_record_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no rows", reason)
+
+    def test_natural_golden_record_header_resolves_correctly(self):
+        """GOLD-06b regression (2026-07-11): `| Golden record | ... |` — the
+        most natural header for this file type — used to hijack expected_col
+        to the ID column ('golden' is an EXPECTED needle), failing every row
+        with a nonsense ID-vs-value mismatch. Record-first resolution keeps
+        it working."""
+        text = (
+            "| Golden record | Field | Expected | Actual |\n"
+            "|--|--|--|--|\n"
+            "| P-123 | price | ¥100 | ¥100 |\n"
+        )
+        ok, reason = golden_record_gate.evaluate_map(text)
         self.assertTrue(ok, msg=reason)
-        self.assertIn("0 golden record", reason)
+        # and a REAL mismatch is still caught on the right columns
+        bad = text.replace("¥100 |\n", "¥200 |\n")
+        ok2, reason2 = golden_record_gate.evaluate_map(bad)
+        self.assertFalse(ok2)
+        self.assertIn('expected "¥100"', reason2)
+
+    def test_all_marker_blocks_scanned(self):
+        """F10 regression (2026-07-11): only the FIRST golden-record block
+        used to be scanned — a failing table in a second block was invisible
+        (false PASS when block 1 passed)."""
+        text = (
+            "<!-- golden-record:start -->\n"
+            "| Record | Field | Expected | Actual |\n"
+            "|--|--|--|--|\n"
+            "| a | x | 1 | 1 |\n"
+            "<!-- golden-record:end -->\n"
+            "prose\n"
+            "<!-- golden-record:start -->\n"
+            "| Record | Field | Expected | Actual |\n"
+            "|--|--|--|--|\n"
+            "| b | y | 2 | 3 |\n"
+            "<!-- golden-record:end -->\n"
+        )
+        ok, reason = golden_record_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn('"b × y"', reason)
 
     def test_perf_large_input_is_linear_and_fast(self):
         header = "| Record | Field | Expected | Actual |\n"

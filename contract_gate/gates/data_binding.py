@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Data-binding map gate — pre-BUILD hard block for UI/migration tasks (DBIND-01, contract-gate #4).
 
-Third sibling of `manifest_gate.py` / `greenfield_gate.py` / `coverage_gate.py`:
-same stdlib-only + `pass`/`fail` prefix + exit 0/1 contract. Where the port arm
-gates a Legacy Behavior Manifest and the greenfield arm gates a 2-layer oracle
-spec, THIS gate closes the layer those two miss — the **data-binding layer**
-(TOOL-REQUIREMENTS R4): every UI element that shows DATA must declare WHERE that
-data comes from and HOW null/empty is handled, BEFORE build starts.
+Third sibling of `manifest.py` / `greenfield.py`: same stdlib-only +
+`pass`/`fail` prefix + exit 0/1 contract. Where the port arm gates a Legacy
+Behavior Manifest and the greenfield arm gates a 2-layer oracle spec, THIS
+gate closes the layer those two miss — the **data-binding layer**
+(TOOL-REQUIREMENTS R4): every UI element that shows DATA must declare WHERE
+that data comes from and HOW null/empty is handled, BEFORE build starts.
 
 Why it exists (bằng chứng, không tưởng tượng): the two columns "Data lấy từ đâu"
 and null/empty-handling are demonstrably where UI/migration bugs hide — a `sale_`
@@ -22,21 +22,29 @@ gets right. It gates ONLY the rows the author classified (or left unclassified)
 as data-bearing. Static types (title/label/image/icon/action/state) are exempt
 by design.
 
-DBIND-01 (stdlib-only, hard verdict — mirrors manifest_gate.py D-01/D-03):
-imports below are limited to argparse/sys/pathlib. NO third-party package, NO
-.venv/pip, NO network — this must run under a bare `python3` with zero setup.
-On success prints `pass <summary>` to stdout and exits 0. On any failure prints
-`fail <one-line reason>` to stderr and exits 1 — the exit code + `pass`/`fail`
-prefix are the load-bearing contract the SKILL.md wiring depends on.
+DBIND-01 (stdlib-only, hard verdict — mirrors manifest.py D-01/D-03):
+imports below are limited to argparse/sys/pathlib plus the sibling
+`contract_gate.tableparse` module (also stdlib-only). NO third-party package,
+NO .venv/pip, NO network — this must run under a bare `python3` with zero
+setup. On success prints `pass <summary>` to stdout and exits 0. On any
+failure prints `fail <one-line reason>` to stderr and exits 1 — the exit
+code + `pass`/`fail` prefix are the load-bearing contract the SKILL.md
+wiring depends on.
 
-DBIND-02 (what counts as a data-binding map): a markdown pipe table whose header
-row has BOTH a column recognizable as a **type/kind** column AND a column
-recognizable as a **source** column. Column position/order/count are free
-(column-reorder tolerant). Multiple such tables in one file are ALL evaluated
-(a real map is naturally one table per screen). At least one qualifying table
-must exist, else `fail no data-binding map table found`. An optional
-`<!-- data-binding:start --> ... <!-- data-binding:end -->` delimiter restricts
-the scan to that block when present.
+DBIND-02 (what counts as a data-binding map): a markdown pipe table whose
+header row has BOTH a column recognizable as a **type/kind** column AND a
+DISTINCT column recognizable as a **source** column (mutually-exclusive
+resolution via `tableparse.find_col`'s exclude set — the GOLD-06 collision
+guard, ported 2026-07-11). Column position/order/count are free
+(column-reorder tolerant). Multiple such tables in one file are ALL
+evaluated — including tables ABUTTING each other with no blank line in
+between (before, a qualifying failing table glued under a non-qualifying
+one was swallowed whole by the skip-table-body scan: a demonstrated false
+PASS). A qualifying table must have at least one body row (a bare header is
+an ungraded claim). At least one qualifying table must exist, else `fail no
+data-binding map table found`. An optional `<!-- data-binding:start -->
+... <!-- data-binding:end -->` delimiter restricts the scan to those
+block(s) when present — EVERY such block is scanned, not just the first.
 
 DBIND-03 (row classification): each body row is DATA-bearing or static, decided
 by its type cell:
@@ -59,16 +67,27 @@ DBIND-04 (the gate — per data row):
      once a column exists it must be filled — bare toLocaleString / missing 万円
      is a real JP locale bug).
 A cell that is whitespace-only, a lone dash look-alike, or a placeholder word
-(?/TODO/TBD/WIP/…) counts as UNFILLED. `N/A` is NOT a placeholder — it is an
+(?/TODO/TBD/WIP/…) counts as UNFILLED — the family-wide
+`tableparse.is_empty_cell` rule. `N/A` is NOT a placeholder — it is an
 explicit, considered value (e.g. null-handling "N/A — always set by API").
 
-DBIND-05 (DoS posture, inherited from siblings): linear line-by-line scan using
-only str.split("|") — no regex, no catastrophic-backtracking surface. A
+DBIND-05 (DoS posture, inherited from siblings): linear line-by-line scan,
+split-based cell parsing — no regex, no catastrophic-backtracking surface. A
 pathological >=5000-row input completes well under 1s.
 
+DBIND-06 (needle hygiene, 2026-07-11): NULL_NEEDLES no longer contains the
+bare Vietnamese word "trong" ("in/inside" — one of the most common VN words)
+nor "rong" (a substring of English "wrong"/"strong"). Either could hijack
+the null-column resolution to an always-filled column that merely mentioned
+the word (e.g. "Giá trị trong DB"), so the REAL null column's empty cells
+were never gated — a demonstrated false PASS. Match on
+null/empty/rỗng/trống/空 (plus fallback/no-data) only; an author who types
+"trong"/"rong" without diacritics gets a LOUD "map thiếu cột null" failure
+and renames the header, which is the safe direction.
+
 Usage:
-    python3 data_binding_gate.py --map <path/to/data-binding.md>
-    python3 data_binding_gate.py --repo <target-repo> --task <task>
+    python3 -m contract_gate.gates.data_binding --map <path/to/data-binding.md>
+    python3 -m contract_gate.gates.data_binding --repo <target-repo> --task <task>
         (resolves to <target-repo>/.port/<task>.databinding.md)
 Exactly one of the two forms is required.
 """
@@ -78,15 +97,28 @@ import argparse
 import sys
 from pathlib import Path
 
-# Optional delimiter — when present, only the enclosed block is scanned.
+try:
+    from .. import tableparse as tp
+except ImportError:  # standalone `python3 contract_gate/gates/data_binding.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from contract_gate import tableparse as tp
+
+# Optional delimiter — when present, only the enclosed block(s) are scanned
+# (EVERY start..end pair, not just the first — tableparse.extract_scope).
 START = "<!-- data-binding:start -->"
 END = "<!-- data-binding:end -->"
 
-# Cell counts as UNFILLED (after strip). Superset of dash look-alikes plus
-# placeholder tokens that mean "haven't decided". `N/A` is intentionally NOT
-# here — it is a filled, considered value.
-EMPTY_CELL_MARKERS = {"", "-", "—", "–", "ー", "−"}
-PLACEHOLDER_WORDS = {"todo", "tbd", "wip", "?", "??", "...", "…", "xxx", "tba"}
+# Shared family-wide helpers (see tableparse.py). Local aliases keep the
+# historical names used throughout this module.
+EMPTY_CELL_MARKERS = tp.EMPTY_CELL_MARKERS
+PLACEHOLDER_WORDS = tp.PLACEHOLDER_WORDS
+_UNRESOLVED_PREFIXES = tp.UNRESOLVED_PREFIXES
+_norm = tp.norm
+_is_empty_cell = tp.is_empty_cell
+_looks_like_table_row = tp.looks_like_table_row
+_split_row = tp.split_row
+_is_separator_row = tp.is_separator_row
+_find_col = tp.find_col
 
 # DBIND-03 classification keywords (matched case-insensitively as substrings of
 # the type/kind cell). STATIC wins only when NO data keyword is also present.
@@ -106,9 +138,10 @@ SOURCE_NEEDLES = (
     "source", "nguồn", "nguon", "binding", "từ đâu", "tu dau",
     "data from", "lấy từ", "lay tu",
 )
+# DBIND-06: no bare "trong"/"rong" — see module docstring.
 NULL_NEEDLES = (
-    "null", "empty", "rỗng", "rong", "trống", "trong", "fallback",
-    "nullable", "no data", "no-data",
+    "null", "empty", "rỗng", "trống", "空", "fallback",
+    "no data", "no-data",
 )
 FORMAT_NEEDLES = ("format", "định dạng", "dinh dang", "đơn vị", "don vi")
 ELEMENT_NEEDLES = ("element", "phần tử", "phan tu", "component", "affordance")
@@ -122,69 +155,6 @@ API_NEEDLES = ("cũ/mới", "cu/moi", "existing/new", "old/new", "api status",
 _NEW_API_MARKERS = ("new", "mới", "moi", "chưa có", "chua co", "build mới", "tbd-api")
 
 
-def _norm(cell: str) -> str:
-    return cell.strip()
-
-
-# Placeholder tokens that mark a cell as UNRESOLVED when they OPEN the cell —
-# an agent/human naturally annotates the gap (`? endpoint unknown`, `TODO: ask`),
-# which is more useful than a bare marker but must still fail. A leading `?` is
-# the canonical "open question"; a mid-string `?` (e.g. `GET /x?id=1`) is fine.
-_UNRESOLVED_PREFIXES = ("todo", "tbd", "wip", "tba")
-
-
-def _is_empty_cell(cell: str) -> bool:
-    n = _norm(cell)
-    if n in EMPTY_CELL_MARKERS:
-        return True
-    low = n.lower()
-    if low in PLACEHOLDER_WORDS:
-        return True
-    if n.startswith("?"):
-        return True
-    for w in _UNRESOLVED_PREFIXES:
-        if low == w or low.startswith(w + " ") or low.startswith(w + ":") or low.startswith(w + "-"):
-            return True
-    return False
-
-
-def _looks_like_table_row(line: str) -> bool:
-    s = line.strip()
-    return s.startswith("|") and s.count("|") >= 2
-
-
-def _split_row(line: str) -> list[str]:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-def _is_separator_row(cells: list[str]) -> bool:
-    if not cells:
-        return False
-    saw_dash = False
-    for c in cells:
-        c2 = c.strip()
-        if not c2:
-            continue
-        if not set(c2) <= set("-: "):
-            return False
-        if "-" in c2:
-            saw_dash = True
-    return saw_dash
-
-
-def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
-    for i, cell in enumerate(header_cells):
-        low = cell.lower()
-        if any(needle in low for needle in needles):
-            return i
-    return None
-
-
 def _is_data_type(type_cell: str) -> bool:
     """DBIND-03: a row is data-bearing unless its type cell names an explicit
     static kind (and no data kind). Unknown/empty type -> data (conservative)."""
@@ -196,34 +166,46 @@ def _is_data_type(type_cell: str) -> bool:
     return not has_static
 
 
-def _extract_scope(text: str) -> str:
-    """If the optional delimiter is present, restrict to the enclosed block;
-    otherwise scan the whole document."""
-    i = text.find(START)
-    if i < 0:
-        return text
-    j = text.find(END, i + len(START))
-    if j < 0:
-        return text[i + len(START):]
-    return text[i + len(START):j]
+def _resolve_header(cells: list[str]) -> dict | None:
+    """DBIND-02: qualify iff the header has a type/kind column AND a DISTINCT
+    source column. All columns are resolved in priority order, each excluding
+    indices already claimed (GOLD-06 guard) — no two fields can silently
+    resolve to the same column."""
+    type_col = _find_col(cells, TYPE_NEEDLES)
+    if type_col is None:
+        return None
+    claimed = frozenset({type_col})
+    source_col = _find_col(cells, SOURCE_NEEDLES, exclude=claimed)
+    if source_col is None:
+        return None
+    claimed = claimed | {source_col}
+    resolved: dict = {"type_col": type_col, "source_col": source_col}
+    for key, needles in (
+        ("null_col", NULL_NEEDLES),
+        ("format_col", FORMAT_NEEDLES),
+        ("api_col", API_NEEDLES),
+        ("elem_col", ELEMENT_NEEDLES),
+        ("screen_col", SCREEN_NEEDLES),
+    ):
+        col = _find_col(cells, needles, exclude=claimed)
+        resolved[key] = col
+        if col is not None:
+            claimed = claimed | {col}
+    return resolved
 
 
-def evaluate_map(text: str) -> tuple[bool, str]:
-    """Core DBIND-02..DBIND-04 verdict over a data-binding map document
-    (fail-fast). Returns (ok, reason) — the FIRST problem, or a pass summary.
-    Delegates to _analyze; see findings() for the list-all-problems variant."""
-    fs, summary = _analyze(text)
-    if fs:
-        return False, fs[0]
-    return True, summary
-
-
-def findings(text: str, path: Path | None = None) -> list[str]:
-    """ALL failure reasons for a data-binding map (empty list = pass): one
-    finding per problematic data row (first issue on that row), plus a per-row
-    note for any data table missing a null/empty-handling column. Backs
-    `contract-gate check --all`. `path` unused (no on-disk resolution)."""
-    return _analyze(text)[0]
+def _row_label(cells: list[str], screen_col: int | None, elem_col: int | None, idx: int) -> str:
+    """Build a human-readable "screen × element" label for a failing row,
+    falling back to the row index within its table."""
+    screen = _norm(cells[screen_col]) if screen_col is not None and screen_col < len(cells) else ""
+    elem = _norm(cells[elem_col]) if elem_col is not None and elem_col < len(cells) else ""
+    if screen and elem:
+        return f'"{screen} × {elem}"'
+    if elem:
+        return f'"{elem}"'
+    if screen:
+        return f'"{screen}" (row {idx})'
+    return f"row {idx}"
 
 
 def _analyze(text: str) -> tuple[list[str], str]:
@@ -234,46 +216,30 @@ def _analyze(text: str) -> tuple[list[str], str]:
     if not text or not text.strip():
         return ["map empty"], ""
 
-    lines = _extract_scope(text).splitlines()
-    n = len(lines)
+    lines = tp.extract_scope(text, START, END).splitlines()
+    tables = tp.iter_tables(lines, _resolve_header)
+
+    if not tables:
+        return ["no data-binding map table found "
+                "(cần bảng có cột type/loại + source/nguồn — R4 Screen×Element map)"], ""
 
     fs: list[str] = []
-    qualifying_tables = 0
     data_rows_total = 0
     new_api_count = 0
 
-    i = 0
-    while i < n:
-        if not _looks_like_table_row(lines[i]):
-            i += 1
-            continue
-        header_cells = _split_row(lines[i])
-        if _is_separator_row(header_cells):
-            i += 1
-            continue
-
-        # A header candidate. Does it qualify as a data-binding table?
-        type_col = _find_col(header_cells, TYPE_NEEDLES)
-        source_col = _find_col(header_cells, SOURCE_NEEDLES)
-        if type_col is None or source_col is None:
-            # Not a data-binding table — skip its whole body so unrelated
-            # tables (with type-but-no-source etc.) don't false-trigger.
-            i = _skip_table_body(lines, i + 1, n)
-            continue
-
-        qualifying_tables += 1
-        null_col = _find_col(header_cells, NULL_NEEDLES)
-        format_col = _find_col(header_cells, FORMAT_NEEDLES)
-        api_col = _find_col(header_cells, API_NEEDLES)
-        elem_col = _find_col(header_cells, ELEMENT_NEEDLES)
-        screen_col = _find_col(header_cells, SCREEN_NEEDLES)
-
-        j = i + 1
-        if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-            j += 1
+    for t_idx, table in enumerate(tables):
+        type_col = table["type_col"]
+        source_col = table["source_col"]
+        null_col = table["null_col"]
+        format_col = table["format_col"]
+        api_col = table["api_col"]
+        elem_col = table["elem_col"]
+        screen_col = table["screen_col"]
+        table_label = tp.nearest_heading(lines, table["header_idx"]) or f"table {t_idx + 1}"
 
         table_row_idx = 0
-        while j < n and _looks_like_table_row(lines[j]):
+        j = table["row_start"]
+        while j < table["row_end"]:
             cells = _split_row(lines[j])
             if _is_separator_row(cells):
                 j += 1
@@ -329,41 +295,36 @@ def _analyze(text: str) -> tuple[list[str], str]:
 
             j += 1
 
-        i = j
-
-    if qualifying_tables == 0:
-        return ["no data-binding map table found "
-                "(cần bảng có cột type/loại + source/nguồn — R4 Screen×Element map)"], ""
+        if table_row_idx == 0:
+            # A bare header with zero body rows is an ungraded claim — fail
+            # loudly. (Zero DATA rows among real static rows still passes:
+            # nothing data-bearing to gate is a legitimate outcome, DP1.)
+            fs.append(f"{table_label} has a data-binding table header but no rows")
 
     new_note = f"; {new_api_count} phụ thuộc API MỚI (BE build)" if new_api_count else ""
     summary = (
         f"{data_rows_total} data binding(s) verified across "
-        f"{qualifying_tables} table(s) (nguồn + null-handling present{new_note})"
+        f"{len(tables)} table(s) (nguồn + null-handling present{new_note})"
     )
     return fs, summary
 
 
-def _skip_table_body(lines: list[str], start: int, n: int) -> int:
-    """Advance past a contiguous run of table rows starting at `start`,
-    returning the index of the first non-table line."""
-    k = start
-    while k < n and _looks_like_table_row(lines[k]):
-        k += 1
-    return k
+def evaluate_map(text: str) -> tuple[bool, str]:
+    """Core DBIND-02..DBIND-04 verdict over a data-binding map document
+    (fail-fast). Returns (ok, reason) — the FIRST problem, or a pass summary.
+    Delegates to _analyze; see findings() for the list-all-problems variant."""
+    fs, summary = _analyze(text)
+    if fs:
+        return False, fs[0]
+    return True, summary
 
 
-def _row_label(cells: list[str], screen_col: int | None, elem_col: int | None, idx: int) -> str:
-    """Build a human-readable "screen × element" label for a failing row,
-    falling back to the row index within its table."""
-    screen = _norm(cells[screen_col]) if screen_col is not None and screen_col < len(cells) else ""
-    elem = _norm(cells[elem_col]) if elem_col is not None and elem_col < len(cells) else ""
-    if screen and elem:
-        return f'"{screen} × {elem}"'
-    if elem:
-        return f'"{elem}"'
-    if screen:
-        return f'"{screen}" (row {idx})'
-    return f"row {idx}"
+def findings(text: str, path: Path | None = None) -> list[str]:
+    """ALL failure reasons for a data-binding map (empty list = pass): one
+    finding per problematic data row (first issue on that row), plus a per-row
+    note for any data table missing a null/empty-handling column. Backs
+    `contract-gate check --all`. `path` unused (no on-disk resolution)."""
+    return _analyze(text)[0]
 
 
 # --------------------------------------------------------------------------
@@ -380,16 +341,17 @@ GLOBS = ("*.databinding.md", "*.contract.md", "*DATA-BINDING*.md", "*data-bindin
 
 def contains_binding_table(text: str) -> bool:
     """True iff `text` has at least one qualifying data-binding table (a header
-    with BOTH a type/kind and a source column). Lets the CLI skip files that
-    merely share a generic name (e.g. `*.contract.md`) but hold a different
-    kind of contract — a gate should not fail a file it does not own."""
-    for line in _extract_scope(text).splitlines():
+    with BOTH a type/kind and a DISTINCT source column). Lets the CLI skip
+    files that merely share a generic name (e.g. `*.contract.md`) but hold a
+    different kind of contract — a gate should not fail a file it does not
+    own. Uses the SAME header resolver as grading (no drift)."""
+    for line in tp.extract_scope(text, START, END).splitlines():
         if not _looks_like_table_row(line):
             continue
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        if _find_col(cells, TYPE_NEEDLES) is not None and _find_col(cells, SOURCE_NEEDLES) is not None:
+        if _resolve_header(cells) is not None:
             return True
     return False
 

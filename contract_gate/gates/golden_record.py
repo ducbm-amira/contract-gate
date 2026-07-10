@@ -22,23 +22,28 @@ mode — see the 3 recurring bug classes it exists to catch (thiếu chữ /
 thiếu logic / sai data): this is the "sai data" layer.
 
 GOLD-01 (stdlib-only, hard verdict — mirrors data_binding.py's DBIND-01):
-imports below are limited to argparse/sys/pathlib. NO third-party package,
-NO network, NO DB driver — this gate NEVER queries a database or drives a
-browser itself (that would break the zero-dep/agent-agnostic contract and
-also just relocate the "trust me" problem). It only gates a markdown
-artifact where a human/agent has ALREADY pinned the real answer and the
-real on-screen result side by side. On success prints `pass <summary>` to
-stdout and exits 0; on failure prints `fail <one-line reason>` to stderr
-and exits 1.
+imports below are limited to argparse/sys/pathlib plus the sibling
+`contract_gate.tableparse` module (also stdlib-only). NO third-party
+package, NO network, NO DB driver — this gate NEVER queries a database or
+drives a browser itself (that would break the zero-dep/agent-agnostic
+contract and also just relocate the "trust me" problem). It only gates a
+markdown artifact where a human/agent has ALREADY pinned the real answer
+and the real on-screen result side by side. On success prints
+`pass <summary>` to stdout and exits 0; on failure prints
+`fail <one-line reason>` to stderr and exits 1.
 
 GOLD-02 (what counts as a golden-record table): a markdown pipe table whose
 header row has BOTH a column recognizable as **Expected** (the real DB/API
-truth) AND a column recognizable as **Actual** (what the running app really
-displayed). Record/Field columns are optional but used for the failure
-label when present. Column order/count is free (reorder-tolerant), multiple
-qualifying tables in one file are all evaluated. An optional
+truth) AND a DISTINCT column recognizable as **Actual** (what the running
+app really displayed). Record/Field columns are optional but used for the
+failure label when present. Column order/count is free (reorder-tolerant),
+multiple qualifying tables in one file are all evaluated — including tables
+abutting each other with no blank line in between. A qualifying table must
+have at least one body row (fixed 2026-07-11; before, a bare header passed
+with "0 golden record(s) verified" — trivially gameable). An optional
 `<!-- golden-record:start --> ... <!-- golden-record:end -->` delimiter
-restricts the scan to that block, mirroring data_binding.py's DBIND-02.
+restricts the scan to those block(s) — EVERY such block is scanned, not
+just the first.
 
 GOLD-03 (the gate — per row, in order):
   1. Expected must be non-empty/non-placeholder — an unpinned Expected means
@@ -61,12 +66,13 @@ GOLD-03 (the gate — per row, in order):
      locale-format) a row is pinned against is what stops every golden
      record in a file from silently being the same happy-path value.
 A cell that is whitespace-only, a lone dash look-alike, or a placeholder
-word (?/TODO/TBD/WIP/…) counts as UNFILLED — identical rules to
-data_binding.py's `_is_empty_cell` (including the leading-`?`-with-reason
-case), reused verbatim for consistency across the gate family.
+word (?/TODO/TBD/WIP/…) counts as UNFILLED — the family-wide
+`tableparse.is_empty_cell` rule (including the leading-`?`-with-reason
+case), now genuinely identical across the gate family because it IS the
+same function.
 
-GOLD-04 (DoS posture, inherited from siblings): linear line-by-line scan
-using only str.split("|") — no regex, no catastrophic-backtracking surface.
+GOLD-04 (DoS posture, inherited from siblings): linear line-by-line scan,
+split-based cell parsing — no regex, no catastrophic-backtracking surface.
 
 GOLD-05 (draft asymmetry — the one thing that makes this gate different than
 its siblings): `data-binding`/`greenfield`/`manifest` drafts can reasonably
@@ -82,36 +88,30 @@ unless real queried/observed data is available in --source.
 GOLD-06 (header-needle collision guard — real bug, found 2026-07-09 while
 adding `fidelity.py`/`testgen.py`): `_find_col` originally matched a needle
 list against a header cell with no memory of columns already claimed by an
-earlier field. TEMPLATE's own header —
-`Expected (DB thật, viết đúng dạng hiển thị)` — contains the VN substring
-"hiển thị", which is also an ACTUAL_NEEDLES entry (VN for "displayed"); a
-bare left-to-right `_find_col(header, ACTUAL_NEEDLES)` therefore resolved
-`actual_col` to the *Expected* column instead of the real `Actual (UI thật)`
-column next to it, silently comparing Expected against itself. This is why
-`evaluate_map(TEMPLATE)` reported `pass` even though TEMPLATE's real Expected
-and Actual cells hold deliberately DIFFERENT placeholder text — a false PASS
-nobody had actually verified. Fixed: `_find_col` now takes an `exclude` set
-of column indices already claimed by another field, and columns are
-resolved in priority order — expected_col, then actual_col (excluding
-expected_col), then record_col/field_col/edge_col (excluding both) — so no
-two fields can ever silently resolve to the same column.
+earlier field, letting expected_col and actual_col silently resolve to the
+SAME column (comparing Expected against itself — a false PASS). The exclude
+guard now lives in `tableparse.find_col` and is used by the whole family.
+
+GOLD-06b (resolution priority, 2026-07-11): the Record/ID column is resolved
+FIRST, then Expected excluding it, then Actual excluding both. Reason:
+EXPECTED_NEEDLES contains "golden", and the most natural header for this
+file type — `| Golden record | Field | Expected | Actual |` — used to
+hijack expected_col to the ID column (Expected was then compared against
+the real Actual: every row failed with a nonsense "P-123 != ¥100" mismatch,
+a false FAIL on a perfectly good table). Record-first resolution keeps both
+the natural header AND the template header resolving correctly.
 
 GOLD-07 (GLOBS narrowed, no bare-substring catch-all — mirrors manifest.py/
 greenfield.py, and the same fix later applied to fidelity.py's FID-08/
-testgen.py's RTM-07): `*golden-record*.md`/`*GOLDEN-RECORD*.md` matched
-`contract-gate init`'s own scaffold filename
-(`example.golden-record.contract.md`) as a bare substring. Once GOLD-06
-made comparison correct, that self-match would have made the scaffold
-self-FAIL (TEMPLATE's Expected != Actual, for real this time) instead of
-the accidental self-pass it had before. Removed those two broad globs,
-keeping only the suffix-anchored `*.goldenrecord.md` / `*.golden-record.md`
-— neither matches `...contract.md`, so a real golden-record file must be
-named `<screen>.goldenrecord.md` or `<screen>.golden-record.md`, not
-`<screen>.golden-record.contract.md`.
+testgen.py's RTM-07): only the suffix-anchored `*.goldenrecord.md` /
+`*.golden-record.md` are matched — a real golden-record file must be named
+`<screen>.goldenrecord.md` or `<screen>.golden-record.md` (the init
+scaffold is `example.golden-record.md`, which the GLOBS DO match — an
+unfilled scaffold fails loudly instead of hiding under a name no gate owns).
 
 Usage:
-    python3 golden_record.py --map <path/to/golden-record.md>
-    python3 golden_record.py --repo <target-repo> --task <task>
+    python3 -m contract_gate.gates.golden_record --map <path/to/golden-record.md>
+    python3 -m contract_gate.gates.golden_record --repo <target-repo> --task <task>
         (resolves to <target-repo>/.port/<task>.goldenrecord.md)
 Exactly one of the two forms is required.
 """
@@ -121,16 +121,27 @@ import argparse
 import sys
 from pathlib import Path
 
-# Optional delimiter — when present, only the enclosed block is scanned.
+try:
+    from .. import tableparse as tp
+except ImportError:  # standalone `python3 contract_gate/gates/golden_record.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from contract_gate import tableparse as tp
+
+# Optional delimiter — when present, only the enclosed block(s) are scanned.
 START = "<!-- golden-record:start -->"
 END = "<!-- golden-record:end -->"
 
-# Identical UNFILLED rules to data_binding.py (GOLD-03 note) — kept as a
-# verbatim local copy rather than a cross-gate import so each gate module
-# stays independently readable/reviewable (repo convention).
-EMPTY_CELL_MARKERS = {"", "-", "—", "–", "ー", "−"}
-PLACEHOLDER_WORDS = {"todo", "tbd", "wip", "?", "??", "...", "…", "xxx", "tba"}
-_UNRESOLVED_PREFIXES = ("todo", "tbd", "wip", "tba")
+# Shared family-wide helpers (see tableparse.py). Local aliases keep the
+# historical names used throughout this module.
+EMPTY_CELL_MARKERS = tp.EMPTY_CELL_MARKERS
+PLACEHOLDER_WORDS = tp.PLACEHOLDER_WORDS
+_UNRESOLVED_PREFIXES = tp.UNRESOLVED_PREFIXES
+_norm = tp.norm
+_is_empty_cell = tp.is_empty_cell
+_looks_like_table_row = tp.looks_like_table_row
+_split_row = tp.split_row
+_is_separator_row = tp.is_separator_row
+_find_col = tp.find_col
 
 # Header-detection needles (lowercase substrings, EN/VN).
 RECORD_NEEDLES = ("record", "bản ghi", "ban ghi", "property id", "record id")
@@ -146,77 +157,31 @@ ACTUAL_NEEDLES = (
 EDGECASE_NEEDLES = ("edge", "biên", "bien", "boundary", "edge case", "edge-case")
 
 
-def _norm(cell: str) -> str:
-    return cell.strip()
-
-
-def _is_empty_cell(cell: str) -> bool:
-    n = _norm(cell)
-    if n in EMPTY_CELL_MARKERS:
-        return True
-    low = n.lower()
-    if low in PLACEHOLDER_WORDS:
-        return True
-    if n.startswith("?"):
-        return True
-    for w in _UNRESOLVED_PREFIXES:
-        if low == w or low.startswith(w + " ") or low.startswith(w + ":") or low.startswith(w + "-"):
-            return True
-    return False
-
-
-def _looks_like_table_row(line: str) -> bool:
-    s = line.strip()
-    return s.startswith("|") and s.count("|") >= 2
-
-
-def _split_row(line: str) -> list[str]:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-def _is_separator_row(cells: list[str]) -> bool:
-    if not cells:
-        return False
-    saw_dash = False
-    for c in cells:
-        c2 = c.strip()
-        if not c2:
-            continue
-        if not set(c2) <= set("-: "):
-            return False
-        if "-" in c2:
-            saw_dash = True
-    return saw_dash
-
-
-def _find_col(
-    header_cells: list[str], needles: tuple[str, ...], exclude: frozenset[int] = frozenset()
-) -> int | None:
-    """First column matching any needle, skipping indices already claimed by
-    another field (GOLD-06) — prevents two fields silently resolving to the
-    same column when their needle lists share a substring."""
-    for i, cell in enumerate(header_cells):
-        if i in exclude:
-            continue
-        low = cell.lower()
-        if any(needle in low for needle in needles):
-            return i
-    return None
-
-
-def _extract_scope(text: str) -> str:
-    i = text.find(START)
-    if i < 0:
-        return text
-    j = text.find(END, i + len(START))
-    if j < 0:
-        return text[i + len(START):]
-    return text[i + len(START):j]
+def _resolve_header(cells: list[str]) -> dict | None:
+    """GOLD-02/GOLD-06/GOLD-06b: qualify iff the header has an Expected AND a
+    DISTINCT Actual column. Resolution order: record (so a "Golden record"
+    ID column can't hijack Expected) -> expected -> actual -> field -> edge,
+    each excluding indices already claimed."""
+    record_col = _find_col(cells, RECORD_NEEDLES)
+    claimed = frozenset() if record_col is None else frozenset({record_col})
+    expected_col = _find_col(cells, EXPECTED_NEEDLES, exclude=claimed)
+    if expected_col is None:
+        return None
+    claimed = claimed | {expected_col}
+    actual_col = _find_col(cells, ACTUAL_NEEDLES, exclude=claimed)
+    if actual_col is None:
+        return None
+    claimed = claimed | {actual_col}
+    field_col = _find_col(cells, FIELD_NEEDLES, exclude=claimed)
+    if field_col is not None:
+        claimed = claimed | {field_col}
+    return {
+        "record_col": record_col,
+        "field_col": field_col,
+        "expected_col": expected_col,
+        "actual_col": actual_col,
+        "edge_col": _find_col(cells, EDGECASE_NEEDLES, exclude=claimed),
+    }
 
 
 def _row_label(cells: list[str], record_col: int | None, field_col: int | None, idx: int) -> str:
@@ -231,62 +196,35 @@ def _row_label(cells: list[str], record_col: int | None, field_col: int | None, 
     return f"row {idx}"
 
 
-def _skip_table_body(lines: list[str], start: int, n: int) -> int:
-    k = start
-    while k < n and _looks_like_table_row(lines[k]):
-        k += 1
-    return k
-
-
 def _analyze(text: str) -> tuple[list[str], str]:
     """Single linear pass backing both evaluate() (fail-fast) and findings()
     (collect-all). Returns (findings, summary): non-empty findings = fail."""
     if not text or not text.strip():
         return ["golden-record file empty"], ""
 
-    lines = _extract_scope(text).splitlines()
-    n = len(lines)
+    lines = tp.extract_scope(text, START, END).splitlines()
+    tables = tp.iter_tables(lines, _resolve_header)
+
+    if not tables:
+        return [
+            "no golden-record table found "
+            "(cần bảng có cột Expected + Actual — R5 2-column oracle)"
+        ], ""
 
     fs: list[str] = []
-    qualifying_tables = 0
     rows_total = 0
 
-    i = 0
-    while i < n:
-        if not _looks_like_table_row(lines[i]):
-            i += 1
-            continue
-        header_cells = _split_row(lines[i])
-        if _is_separator_row(header_cells):
-            i += 1
-            continue
-
-        # GOLD-06: resolve in priority order, each excluding columns already
-        # claimed — expected/actual are the load-bearing pair (compared for
-        # equality) so they're resolved first and mutually exclusive.
-        expected_col = _find_col(header_cells, EXPECTED_NEEDLES)
-        actual_col = _find_col(
-            header_cells, ACTUAL_NEEDLES,
-            exclude=frozenset({expected_col}) if expected_col is not None else frozenset(),
-        )
-        if expected_col is None or actual_col is None:
-            i = _skip_table_body(lines, i + 1, n)
-            continue
-
-        qualifying_tables += 1
-        claimed = frozenset({expected_col, actual_col})
-        record_col = _find_col(header_cells, RECORD_NEEDLES, exclude=claimed)
-        claimed = claimed | (frozenset({record_col}) if record_col is not None else frozenset())
-        field_col = _find_col(header_cells, FIELD_NEEDLES, exclude=claimed)
-        claimed = claimed | (frozenset({field_col}) if field_col is not None else frozenset())
-        edge_col = _find_col(header_cells, EDGECASE_NEEDLES, exclude=claimed)
-
-        j = i + 1
-        if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-            j += 1
+    for t_idx, table in enumerate(tables):
+        record_col = table["record_col"]
+        field_col = table["field_col"]
+        expected_col = table["expected_col"]
+        actual_col = table["actual_col"]
+        edge_col = table["edge_col"]
+        table_label = tp.nearest_heading(lines, table["header_idx"]) or f"table {t_idx + 1}"
 
         row_idx = 0
-        while j < n and _looks_like_table_row(lines[j]):
+        j = table["row_start"]
+        while j < table["row_end"]:
             cells = _split_row(lines[j])
             if _is_separator_row(cells):
                 j += 1
@@ -333,15 +271,12 @@ def _analyze(text: str) -> tuple[list[str], str]:
 
             j += 1
 
-        i = j
+        if row_idx == 0:
+            # GOLD-02: a bare header with zero body rows is an ungraded
+            # claim, not a pass ("0 verified" used to read as success).
+            fs.append(f"{table_label} has a golden-record table header but no rows")
 
-    if qualifying_tables == 0:
-        return [
-            "no golden-record table found "
-            "(cần bảng có cột Expected + Actual — R5 2-column oracle)"
-        ], ""
-
-    summary = f"{rows_total} golden record(s) verified against real DB/UI truth across {qualifying_tables} table(s)"
+    summary = f"{rows_total} golden record(s) verified against real DB/UI truth across {len(tables)} table(s)"
     return fs, summary
 
 
@@ -368,20 +303,17 @@ GLOBS = ("*.goldenrecord.md", "*.golden-record.md")
 
 
 def contains_golden_record_table(text: str) -> bool:
-    """True iff `text` has at least one qualifying table (header with BOTH an
-    Expected and a DISTINCT Actual column) — lets the CLI skip files that
-    merely share a generic name but hold a different kind of contract."""
-    for line in _extract_scope(text).splitlines():
+    """True iff `text` has at least one qualifying table (a header with BOTH
+    an Expected and a DISTINCT Actual column) — lets the CLI skip files that
+    merely share a generic name but hold a different kind of contract. Uses
+    the SAME header resolver as grading (no drift)."""
+    for line in tp.extract_scope(text, START, END).splitlines():
         if not _looks_like_table_row(line):
             continue
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        expected_col = _find_col(cells, EXPECTED_NEEDLES)
-        if expected_col is None:
-            continue
-        actual_col = _find_col(cells, ACTUAL_NEEDLES, exclude=frozenset({expected_col}))
-        if actual_col is not None:
+        if _resolve_header(cells) is not None:
             return True
     return False
 

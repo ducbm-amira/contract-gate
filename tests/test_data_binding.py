@@ -223,6 +223,64 @@ class DataBindingGateParserUnitTests(unittest.TestCase):
         ok, reason = data_binding_gate.evaluate_map(text)
         self.assertTrue(ok, msg=reason)
 
+    def test_fail_header_only_table(self):
+        """F7 (2026-07-11): a BARE header with zero body rows is an ungraded
+        claim — fail (distinct from the all-static-rows pass above)."""
+        text = "| Element | Type | Source | Null |\n|--|--|--|--|\n"
+        ok, reason = data_binding_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no rows", reason)
+
+    def test_fail_abutting_failing_table_not_swallowed(self):
+        """F4 regression (2026-07-11): a qualifying FAILING table glued
+        directly under a non-qualifying table (no blank line) used to be
+        swallowed whole by the skip-table-body scan — with a passing table
+        elsewhere the file reported pass (demonstrated false PASS)."""
+        text = (
+            "| Screen | Element | Type | Source | Null |\n"
+            "|--|--|--|--|--|\n"
+            "| s | price | data | `f.price` | show - |\n"
+            "\n"
+            "| Note | Comment |\n"
+            "|--|--|\n"
+            "| a | b |\n"
+            "| Screen | Element | Type | Source | Null |\n"
+            "|--|--|--|--|--|\n"
+            "| s | addr | data |  |  |\n"
+        )
+        ok, reason = data_binding_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("addr", reason)
+
+    def test_fail_null_needle_not_hijacked_by_vn_word_trong(self):
+        """F5/DBIND-06 regression (2026-07-11): NULL_NEEDLES contained the
+        bare VN word 'trong' ('in/inside'), so a column like 'Giá trị trong
+        DB' — always filled — resolved as the null column and the REAL
+        Null/empty column's empty cells were never gated (false PASS). Now
+        the real Null column is found and its empty cell fails."""
+        text = (
+            "| Element | Type | Giá trị trong DB | Source | Null/empty |\n"
+            "|--|--|--|--|--|\n"
+            "| price | data | 123 | `f.price` |  |\n"
+        )
+        ok, reason = data_binding_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("null/empty handling", reason)
+
+    def test_pass_escaped_pipe_in_source_cell(self):
+        """F6 regression (2026-07-11): an escaped \\| inside the Source cell
+        shifted every later column, so an EMPTY Null cell read a filled
+        neighbor and passed (false PASS). The shared split_row keeps \\| as
+        cell content; the truly-empty Null cell now fails."""
+        text = (
+            "| Element | Type | Source | Null/empty |\n"
+            "|--|--|--|--|\n"
+            "| price | data | `GET /x` field a \\| b |  |\n"
+        )
+        ok, reason = data_binding_gate.evaluate_map(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("null/empty handling", reason)
+
     def test_perf_large_input_is_linear_and_fast(self):
         header = "| Screen | Element | Type | Source | Null |\n"
         sep = "|--|--|--|--|--|\n"
