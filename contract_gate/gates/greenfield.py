@@ -50,13 +50,14 @@ cell satisfied both layers: a false PASS). Now such a table simply does not
 qualify, which is the loud outcome.
 
 D-03 (Design-ref resolvability, NO NETWORK): a Design-ref cell is either (a)
-a Claude Design link containing `/design/h/` — format-checked non-empty
-ONLY, this gate never opens a socket or curls it, preserving the
-stdlib-only/no-network discipline verbatim from manifest.py's D-01 — or
-(b) a local mockup path (HTML/PDF/image), which is resolved relative to the
-spec file's directory and must `Path.exists()`. Both forms are accepted
-because real greenfield tasks have used both a Claude Design bundle link and
-a plain local HTML mockup under `~/Downloads`.
+a Claude Design link containing `/design/h/`, or any `http(s)://` URL
+(Figma, hosted mockup, …) — format-checked non-empty ONLY, this gate never
+opens a socket or curls it, preserving the stdlib-only/no-network
+discipline verbatim from manifest.py's D-01 — or (b) a local mockup path
+(HTML/PDF/image), which is resolved relative to the spec file's directory
+and must `Path.exists()`. All forms are accepted because real greenfield
+tasks have used a Claude Design bundle link, a Figma URL, and a plain local
+HTML mockup under `~/Downloads`.
 
 D-04 (no-visual exempt, explicit only): a pure logic/artifact spec with no
 mockup may exempt the Design-ref layer, but ONLY via an explicit flag — a
@@ -255,15 +256,21 @@ def _check_row(cells: list[str], table: dict, spec_dir: Path, file_exempt: bool)
 
 def _designref_ok(cell: str, spec_dir: Path) -> bool:
     """D-03 resolvability, NO NETWORK. A `/design/h/<code>` Claude Design
-    link is format-checked non-empty ONLY — never curled. A local mockup
-    path (contains a path separator, or ends in a recognized mockup
-    extension) is resolved relative to spec_dir and must exist on disk."""
+    link OR any http(s):// URL (Figma, hosted mockup, …) is format-checked
+    non-empty ONLY — never curled (before 2026-07-11 a Figma URL was
+    misread as a local path, never existed on disk, and every row false-
+    FAILED with 'unresolvable Design-ref'). A local mockup path (contains a
+    path separator, or ends in a recognized mockup extension) is resolved
+    relative to spec_dir and must exist on disk."""
     c = _norm(cell)
     if not c:
         return False
     if "/design/h/" in c:
         return True
-    looks_local = "/" in c or c.lower().endswith(_LOCAL_DESIGNREF_EXTENSIONS)
+    low = c.lower()
+    if low.startswith("http://") or low.startswith("https://"):
+        return True
+    looks_local = "/" in c or low.endswith(_LOCAL_DESIGNREF_EXTENSIONS)
     if not looks_local:
         return False
     p = Path(c)

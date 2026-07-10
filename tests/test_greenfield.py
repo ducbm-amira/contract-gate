@@ -317,6 +317,19 @@ class GreenfieldGateParserUnitTests(unittest.TestCase):
         self.assertFalse(ok, msg=reason)
         self.assertIn("empty Observable", reason)
 
+    def test_pass_https_designref_not_treated_as_local_path(self):
+        """F11 regression (2026-07-11): a non-Claude-Design URL (e.g. Figma)
+        contains '/' so it was misread as a LOCAL path, never existed on
+        disk, and the row false-FAILED with 'unresolvable Design-ref'. Any
+        http(s):// URL is now format-checked only (still NO network)."""
+        text = (
+            "| # | Behavior | Design-ref | Observable |\n"
+            "|--|--|--|--|\n"
+            "| 1 | b | https://www.figma.com/file/AbC123/search-screen | cell shows X |\n"
+        )
+        ok, reason = greenfield_gate.evaluate_spec(text)
+        self.assertTrue(ok, msg=reason)
+
     def test_fail_header_only_table(self):
         """F7: a header-only qualifying table (0 rows) fails, naming it."""
         text = (
