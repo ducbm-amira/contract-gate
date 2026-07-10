@@ -13,7 +13,8 @@ Playwright/pixelmatch/coloraide deps), invoked as `python -m verdict --screen
 <id> --out <report.json>`.
 
 FID-01 (stdlib-only, hard verdict — mirrors golden_record.py's GOLD-01):
-imports below are limited to argparse/json/sys/pathlib. NO third-party
+imports below are limited to argparse/json/sys/pathlib plus the sibling
+`contract_gate.tableparse` module (also stdlib-only). NO third-party
 package, NO subprocess, NO Playwright/pixelmatch/coloraide import here — this
 gate NEVER runs the pixel-diff itself (that would pull design-fidelity-gate's
 whole dependency stack into contract-gate's zero-dep CLI, and would just
@@ -26,10 +27,13 @@ golden_record.py. On success prints `pass <summary>` to stdout and exits 0.
 On any failure prints `fail <one-line reason>` to stderr and exits 1.
 
 FID-02 (what counts as a qualifying table): a markdown pipe table whose
-header row has BOTH a column recognizable as "Screen" AND a column
-recognizable as "Report" (the path to that screen's `python -m verdict
---out` JSON). An optional "Notes" column is carried through only for the
-human, never graded.
+header row has BOTH a column recognizable as "Screen" AND a **distinct**
+column recognizable as "Report" (the path to that screen's `python -m
+verdict --out` JSON), resolved as a mutually-exclusive pair (GOLD-06
+exclusion guard via `tableparse.find_col`, ported 2026-07-11 — a single
+"Screen report" header cell now disqualifies the table loudly instead of
+resolving both fields to it). An optional "Notes" column is carried through
+only for the human, never graded.
 
 FID-03 (the gate — per row, in order):
   1. Report cell must be non-empty/non-placeholder — an unfilled Report cell
@@ -46,9 +50,13 @@ FID-03 (the gate — per row, in order):
      reason points straight at which dimension drifted (color/font/size/
      position/radius/shadow/affordance/pixel/geometry/other) instead of
      forcing a re-open of the JSON.
+  5. every qualifying table must have at least one body row — a header-only
+     fidelity table is an ungraded claim, not a pass (fixed 2026-07-11;
+     before, a bare header passed with "0 screen(s) fidelity-verified").
 A cell that is whitespace-only, a lone dash look-alike, or a placeholder
-word (?/TODO/TBD/WIP/…) counts as UNFILLED — identical rules to the other
-three gates' `_is_empty_cell`, reused verbatim for consistency.
+word (?/TODO/TBD/WIP/…) counts as UNFILLED — the family-wide
+`tableparse.is_empty_cell` rule, now genuinely identical across all six
+gates because it IS the same function.
 
 FID-04 (relative report paths): a Report cell that is not already absolute
 is resolved relative to the *contract file's own directory* (not the CWD the
@@ -59,9 +67,10 @@ alongside the report it pins and stay portable across checkouts. When
 
 FID-05 (multi-table files — scan the WHOLE file, ported preventively from the
 identical D-07 bug already fixed once in `greenfield.py` and once in
-`manifest.py`): the row-scanning loop below never stops after the first
-qualifying table; it keeps scanning subsequent lines for more tables in the
-same file. Do not "optimize" this into an early return.
+`manifest.py`): every qualifying table is graded; parsing is delegated to
+`tableparse.iter_tables`, which also handles tables ABUTTING each other with
+no blank line in between (the D-07 residue — false-PASS surface). Do not
+"optimize" this into an early return.
 
 FID-06 (decision, deliberately NOT enforced here): this gate does not check
 that the report is FRESH — i.e. that it was regenerated against the current
@@ -85,18 +94,16 @@ drafting agent explicitly includes the report path/content (e.g. it was
 just run in the same session).
 
 Usage:
-    python3 fidelity.py --contract <path/to/x.fidelity.md>
-    python3 fidelity.py --repo <target-repo> --screen <screen-id>
+    python3 -m contract_gate.gates.fidelity --contract <path/to/x.fidelity.md>
+    python3 -m contract_gate.gates.fidelity --repo <target-repo> --screen <screen-id>
         (resolves to <target-repo>/.port/<screen-id>.fidelity.md)
 Exactly one of the two forms is required.
 
 FID-08 (deliberately narrow GLOBS, no generic `*.contract.md` catch-all —
 mirrors manifest.py/greenfield.py, NOT data_binding.py/golden_record.py):
-`contract-gate init` scaffolds every gate's example as
-`example.<gate-key>.contract.md`, which would make this gate self-discover
-(and self-FAIL, since a fresh scaffold has no real report yet) if `*.contract
-.md` were in GLOBS. Naming a real contract file `<screen>.fidelity.md`
-(not `.fidelity.contract.md`) opts it into this gate.
+name a real contract file `<screen>.fidelity.md` (the init scaffold is
+`example.fidelity.md`, which the GLOBS DO match — an unfilled scaffold
+fails loudly instead of hiding under a name no gate owns).
 """
 from __future__ import annotations
 
@@ -105,13 +112,22 @@ import json
 import sys
 from pathlib import Path
 
-# Identical UNFILLED rules to data_binding.py / golden_record.py / manifest.py
-# / greenfield.py — kept as a verbatim local copy rather than a cross-gate
-# import so each gate module stays independently readable/reviewable (repo
-# convention).
-EMPTY_CELL_MARKERS = {"", "-", "—", "–", "ー", "−"}
-PLACEHOLDER_WORDS = {"todo", "tbd", "wip", "?", "??", "...", "…", "xxx", "tba"}
-_UNRESOLVED_PREFIXES = ("todo", "tbd", "wip", "tba")
+try:
+    from .. import tableparse as tp
+except ImportError:  # standalone `python3 contract_gate/gates/fidelity.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from contract_gate import tableparse as tp
+
+# Shared family-wide helpers (see tableparse.py). Local aliases keep the
+# historical names used throughout this module.
+EMPTY_CELL_MARKERS = tp.EMPTY_CELL_MARKERS
+PLACEHOLDER_WORDS = tp.PLACEHOLDER_WORDS
+_norm = tp.norm
+_is_empty_cell = tp.is_empty_cell
+_looks_like_table_row = tp.looks_like_table_row
+_split_row = tp.split_row
+_is_separator_row = tp.is_separator_row
+_find_col = tp.find_col
 
 # Header-detection needles (lowercase substrings, EN/VN).
 SCREEN_NEEDLES = ("screen", "màn", "man hinh", "màn hình", "trang", "page")
@@ -128,75 +144,22 @@ _KNOWN_BUCKET_ORDER = (
     "affordance", "pixel", "geometry", "interaction", "other",
 )
 
-# Optional delimiter — when present, only the enclosed block is scanned.
+# Optional delimiter — when present, only the enclosed block(s) are scanned
+# (EVERY start..end pair, not just the first — tableparse.extract_scope).
 START = "<!-- fidelity:start -->"
 END = "<!-- fidelity:end -->"
 
 
-def _norm(cell: str) -> str:
-    return cell.strip()
-
-
-def _is_empty_cell(cell: str) -> bool:
-    n = _norm(cell)
-    if n in EMPTY_CELL_MARKERS:
-        return True
-    low = n.lower()
-    if low in PLACEHOLDER_WORDS:
-        return True
-    if n.startswith("?"):
-        return True
-    for w in _UNRESOLVED_PREFIXES:
-        if low == w or low.startswith(w + " ") or low.startswith(w + ":") or low.startswith(w + "-"):
-            return True
-    return False
-
-
-def _looks_like_table_row(line: str) -> bool:
-    s = line.strip()
-    return s.startswith("|") and s.count("|") >= 2
-
-
-def _split_row(line: str) -> list[str]:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-def _is_separator_row(cells: list[str]) -> bool:
-    if not cells:
-        return False
-    saw_dash = False
-    for c in cells:
-        c2 = c.strip()
-        if not c2:
-            continue
-        if not set(c2) <= set("-: "):
-            return False
-        if "-" in c2:
-            saw_dash = True
-    return saw_dash
-
-
-def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
-    for i, cell in enumerate(header_cells):
-        low = cell.lower()
-        if any(needle in low for needle in needles):
-            return i
-    return None
-
-
-def _extract_scope(text: str) -> str:
-    i = text.find(START)
-    if i < 0:
-        return text
-    j = text.find(END, i + len(START))
-    if j < 0:
-        return text[i + len(START):]
-    return text[i + len(START):j]
+def _resolve_header(cells: list[str]) -> dict | None:
+    """FID-02: qualify iff the header has a Screen column AND a DISTINCT
+    Report column (GOLD-06 exclusion guard)."""
+    screen_col = _find_col(cells, SCREEN_NEEDLES)
+    if screen_col is None:
+        return None
+    report_col = _find_col(cells, REPORT_NEEDLES, exclude=frozenset({screen_col}))
+    if report_col is None:
+        return None
+    return {"screen_col": screen_col, "report_col": report_col}
 
 
 def _row_label(cells: list[str], screen_col: int | None, idx: int) -> str:
@@ -248,42 +211,24 @@ def _analyze(text: str, base_dir: Path | None) -> tuple[list[str], str]:
     if not text or not text.strip():
         return ["fidelity contract file empty"], ""
 
-    lines = _extract_scope(text).splitlines()
-    n = len(lines)
+    lines = tp.extract_scope(text, START, END).splitlines()
+    tables = tp.iter_tables(lines, _resolve_header)
+
+    if not tables:
+        return [
+            "no fidelity table found (cần bảng có cột Screen + Report — FID-02)"
+        ], ""
 
     fs: list[str] = []
-    qualifying_tables = 0
     rows_total = 0
-
-    i = 0
-    while i < n:
-        if not _looks_like_table_row(lines[i]):
-            i += 1
-            continue
-        header_cells = _split_row(lines[i])
-        if _is_separator_row(header_cells):
-            i += 1
-            continue
-
-        screen_col = _find_col(header_cells, SCREEN_NEEDLES)
-        report_col = _find_col(header_cells, REPORT_NEEDLES)
-        if screen_col is None or report_col is None:
-            # Not a fidelity table — skip past its body without grading it
-            # (FID-05: keep scanning the rest of the file for more tables).
-            j = i + 1
-            while j < n and _looks_like_table_row(lines[j]):
-                j += 1
-            i = j
-            continue
-
-        qualifying_tables += 1
-
-        j = i + 1
-        if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-            j += 1
+    for t_idx, table in enumerate(tables):
+        screen_col = table["screen_col"]
+        report_col = table["report_col"]
+        table_label = tp.nearest_heading(lines, table["header_idx"]) or f"table {t_idx + 1}"
 
         row_idx = 0
-        while j < n and _looks_like_table_row(lines[j]):
+        j = table["row_start"]
+        while j < table["row_end"]:
             cells = _split_row(lines[j])
             if _is_separator_row(cells):
                 j += 1
@@ -308,14 +253,11 @@ def _analyze(text: str, base_dir: Path | None) -> tuple[list[str], str]:
 
             j += 1
 
-        i = j
+        if row_idx == 0:
+            # FID-03.5: a header-only table is an ungraded claim, not a pass.
+            fs.append(f"{table_label} has a fidelity table header but no rows")
 
-    if qualifying_tables == 0:
-        return [
-            "no fidelity table found (cần bảng có cột Screen + Report — FID-02)"
-        ], ""
-
-    summary = f"{rows_total} screen(s) fidelity-verified across {qualifying_tables} table(s)"
+    summary = f"{rows_total} screen(s) fidelity-verified across {len(tables)} table(s)"
     return fs, summary
 
 
@@ -344,15 +286,16 @@ GLOBS = ("*.fidelity.md",)
 
 def contains_fidelity_table(text: str) -> bool:
     """True iff `text` has at least one qualifying table (header with BOTH a
-    Screen and a Report column) — lets the CLI skip files that merely share
-    a generic name but hold a different kind of contract."""
-    for line in _extract_scope(text).splitlines():
+    Screen and a DISTINCT Report column) — lets the CLI skip files that
+    merely share a generic name but hold a different kind of contract. Uses
+    the SAME header resolver as grading (no drift)."""
+    for line in tp.extract_scope(text, START, END).splitlines():
         if not _looks_like_table_row(line):
             continue
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        if _find_col(cells, SCREEN_NEEDLES) is not None and _find_col(cells, REPORT_NEEDLES) is not None:
+        if _resolve_header(cells) is not None:
             return True
     return False
 

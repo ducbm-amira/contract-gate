@@ -167,6 +167,86 @@ class TestgenGateParserUnitTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("REQ-B", reason)
 
+    def test_fail_expected_behavior_needle_collision(self):
+        """F3 regression (GOLD-06 class, 2026-07-11): a lone 'Expected
+        behavior' header cell matches BOTH the Requirement needles
+        ('behavior') and the Expected needles ('expected'). Before the
+        exclusion guard both fields resolved to that SAME column, so an RTM
+        with NO requirement column at all passed with one filled cell — a
+        false PASS defeating traceability. Now such a table does not
+        qualify (loud 'no RTM table found')."""
+        text = (
+            "| Test ID | Expected behavior | Steps |\n"
+            "|--|--|--|\n"
+            "| TC-01 | user sees list | do x |\n"
+        )
+        self.assertFalse(testgen_gate.applies(text))
+        ok, reason = testgen_gate.evaluate_rtm(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no RTM table", reason)
+
+    def test_pass_requirement_and_expected_behavior_columns(self):
+        """The legit variant: a real Requirement column PLUS an 'Expected
+        behavior' column still resolves correctly (req first, expected
+        excluding it)."""
+        text = (
+            "| Requirement | Test ID | Expected behavior |\n"
+            "|--|--|--|\n"
+            "| REQ-1 | TC-01 | list shows 3 rows |\n"
+        )
+        ok, reason = testgen_gate.evaluate_rtm(text)
+        self.assertTrue(ok, msg=reason)
+
+    def test_fail_header_only_table(self):
+        """F7 regression (2026-07-11): a header-only RTM used to PASS with
+        '0 test case(s) traced' — gameable by submitting just the header."""
+        text = "| Requirement | Expected |\n|--|--|\n"
+        ok, reason = testgen_gate.evaluate_rtm(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no rows", reason)
+
+    def test_fail_abutting_table_after_non_qualifying_table(self):
+        """F4 regression: a qualifying, failing RTM table glued directly
+        under a non-qualifying table (no blank line) used to be swallowed
+        by the skip-table-body scan — invisible, so a passing table
+        elsewhere made the whole file pass."""
+        text = (
+            "| Requirement | Expected |\n"
+            "|--|--|\n"
+            "| REQ-A | shows list |\n"
+            "\n"
+            "| Note | Comment |\n"
+            "|--|--|\n"
+            "| a | b |\n"
+            "| Requirement | Expected |\n"
+            "|--|--|\n"
+            "| REQ-B |  |\n"
+        )
+        ok, reason = testgen_gate.evaluate_rtm(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("REQ-B", reason)
+
+    def test_all_marker_blocks_scanned(self):
+        """F10 regression (2026-07-11): only the FIRST testgen:start..end
+        block used to be scanned — a failing table in a second block was
+        invisible (false PASS when block 1 passed)."""
+        text = (
+            "<!-- testgen:start -->\n"
+            "| Requirement | Expected |\n"
+            "|--|--|\n"
+            "| REQ-A | shows list |\n"
+            "<!-- testgen:end -->\n"
+            "prose between blocks\n"
+            "<!-- testgen:start -->\n"
+            "| Requirement | Expected |\n"
+            "|--|--|\n"
+            "| REQ-B |  |\n"
+            "<!-- testgen:end -->\n"
+        )
+        ok, reason = testgen_gate.evaluate_rtm(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("REQ-B", reason)
+
     def test_perf_pathological_input_is_fast_too(self):
         text = "| Requirement | Expected |\n" + (("|" * 200) + ("-" * 200) + "\n") * 500
         start = time.monotonic()

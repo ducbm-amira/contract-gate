@@ -204,6 +204,51 @@ class FidelityGateParserUnitTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("not found", reason)
 
+    def test_fail_screen_report_needle_collision(self):
+        """F3 regression (GOLD-06 class, 2026-07-11): a lone 'Screen report'
+        header cell matches both needle sets; before the exclusion guard
+        Screen AND Report resolved to the same column. Now such a table does
+        not qualify (loud 'no fidelity table found')."""
+        text = (
+            "| Screen report | Notes |\n"
+            "|--|--|\n"
+            "| a | b |\n"
+        )
+        self.assertFalse(fidelity_gate.applies(text))
+        ok, reason = fidelity_gate.evaluate_contract(text, FIXTURES)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no fidelity table", reason)
+
+    def test_fail_header_only_table(self):
+        """F7 regression (2026-07-11): a header-only fidelity table used to
+        PASS with '0 screen(s) fidelity-verified' — gameable by submitting
+        just the header."""
+        text = "| Screen | Report |\n|--|--|\n"
+        ok, reason = fidelity_gate.evaluate_contract(text, FIXTURES)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no rows", reason)
+
+    def test_all_marker_blocks_scanned(self):
+        """F10 regression (2026-07-11): only the FIRST fidelity:start..end
+        block used to be scanned — a failing row in a second block was
+        invisible (false PASS when block 1 passed)."""
+        text = (
+            "<!-- fidelity:start -->\n"
+            "| Screen | Report |\n"
+            "|--|--|\n"
+            "| a | reports/pass.report.json |\n"
+            "<!-- fidelity:end -->\n"
+            "prose\n"
+            "<!-- fidelity:start -->\n"
+            "| Screen | Report |\n"
+            "|--|--|\n"
+            "| b |  |\n"
+            "<!-- fidelity:end -->\n"
+        )
+        ok, reason = fidelity_gate.evaluate_contract(text, FIXTURES)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn('screen "b"', reason)
+
     def test_perf_pathological_input_is_fast_too(self):
         text = "| Screen | Report |\n" + (("|" * 200) + ("-" * 200) + "\n") * 500
         start = time.monotonic()

@@ -14,19 +14,26 @@ the `senior-qa` test-design discipline — baked into DRAFT_GUIDANCE below as
 portable prose, not a skill invocation, so this gate stays agent-agnostic.
 
 RTM-01 (stdlib-only, hard verdict — mirrors golden_record.py's GOLD-01):
-imports below are limited to argparse/sys/pathlib. NO third-party package,
-NO subprocess, NO LLM call here — `check` never drafts a test case itself,
-it only grades the structure of an RTM an agent/human already wrote (the
-draft/check split, RTM-05). On success prints `pass <summary>` to stdout and
-exits 0. On any failure prints `fail <one-line reason>` to stderr and exits
-1.
+imports below are limited to argparse/sys/pathlib plus the sibling
+`contract_gate.tableparse` module (also stdlib-only). NO third-party
+package, NO subprocess, NO LLM call here — `check` never drafts a test case
+itself, it only grades the structure of an RTM an agent/human already wrote
+(the draft/check split, RTM-05). On success prints `pass <summary>` to
+stdout and exits 0. On any failure prints `fail <one-line reason>` to
+stderr and exits 1.
 
 RTM-02 (what counts as a qualifying table): a markdown pipe table whose
 header row has BOTH a column recognizable as "Requirement"/"Behavior"/
-"SHALL" (which behavior this test case traces to) AND a column recognizable
-as "Expected"/"Oracle" (what a passing run must show). Test ID, Scenario/
-Steps, Technique, Severity/Priority columns are optional and carried through
-for the human but only Technique is graded (RTM-03.3).
+"SHALL" (which behavior this test case traces to) AND a **distinct** column
+recognizable as "Expected"/"Oracle" (what a passing run must show). The two
+are resolved as a mutually-exclusive pair via `tableparse.find_col`'s
+`exclude` set (the GOLD-06 collision guard, ported 2026-07-11): before
+that, a single header cell like "Expected behavior" — which contains both
+needle sets — resolved Requirement AND Expected to the SAME column, so an
+RTM with no requirement column at all passed with one filled cell (a false
+PASS defeating traceability, the gate's entire purpose). Test ID, Scenario/
+Steps, Technique, Severity/Priority columns are optional and carried
+through for the human but only Technique is graded (RTM-03.3).
 
 RTM-03 (the gate — per row, in order):
   1. the Requirement/Behavior-ref cell must be non-empty/non-placeholder —
@@ -49,14 +56,21 @@ RTM-03 (the gate — per row, in order):
      happy-path shape (mirrors data_binding.py's optional format column and
      golden_record.py's optional Edge-case column — same "if you claim to
      track it, prove you tracked it" rule).
+  4. every qualifying table must have at least one body row — a header-only
+     RTM ("cases to follow") is an ungraded claim, not a pass (fixed
+     2026-07-11; before, a bare header passed with "0 test case(s) traced").
 A cell that is whitespace-only, a lone dash look-alike, or a placeholder
-word (?/TODO/TBD/WIP/…) counts as UNFILLED — identical rules to the other
-four gates' `_is_empty_cell`, reused verbatim for consistency.
+word (?/TODO/TBD/WIP/…) counts as UNFILLED — the family-wide
+`tableparse.is_empty_cell` rule, now genuinely identical across all six
+gates because it IS the same function.
 
 RTM-04 (multi-table files — scan the WHOLE file, ported preventively from
 the identical D-07 bug already fixed once in `greenfield.py` and once in
-`manifest.py`, and guarded against from the start in `fidelity.py`'s FID-05):
-the row-scanning loop below never stops after the first qualifying table.
+`manifest.py`): every qualifying table is graded; parsing is delegated to
+`tableparse.iter_tables`, which also handles tables ABUTTING each other
+with no blank line in between (the D-07 residue: an abutting table's rows
+used to be graded under the previous table's column indices, or swallowed
+by a non-qualifying table's body — both false-PASS surfaces).
 
 RTM-05 (draft symmetry — the opposite of golden_record.py's/fidelity.py's
 GOLD-05/FID-07): unlike those two, an RTM row's Requirement-ref and even a
@@ -83,30 +97,39 @@ completeness it has no second document to check against. This comment is
 the record that RTM-06 was decided, not silently dropped.
 
 Usage:
-    python3 testgen.py --rtm <path/to/x.testgen.md>
-    python3 testgen.py --repo <target-repo> --task <task>
+    python3 -m contract_gate.gates.testgen --rtm <path/to/x.testgen.md>
+    python3 -m contract_gate.gates.testgen --repo <target-repo> --task <task>
         (resolves to <target-repo>/.port/<task>.testgen.md)
 Exactly one of the two forms is required.
 
 RTM-07 (deliberately narrow GLOBS, no generic `*.contract.md` catch-all —
 mirrors manifest.py/greenfield.py/fidelity.py's FID-08, NOT data_binding.py/
-golden_record.py): keeps this gate from self-discovering (and possibly
-self-failing) `contract-gate init`'s `example.testgen.contract.md` scaffold.
-Name a real RTM file `<task>.testgen.md`, not `.testgen.contract.md`.
-"""
+golden_record.py): keeps this gate from self-discovering `contract-gate
+init`'s scaffold under a name it doesn't own. Name a real RTM file
+`<task>.testgen.md` (the init scaffold is `example.testgen.md`, which the
+GLOBS DO match — an unfilled scaffold fails loudly instead of hiding)."""
 from __future__ import annotations
 
 import argparse
 import sys
 from pathlib import Path
 
-# Identical UNFILLED rules to data_binding.py / golden_record.py / manifest.py
-# / greenfield.py / fidelity.py — kept as a verbatim local copy rather than a
-# cross-gate import so each gate module stays independently readable/
-# reviewable (repo convention).
-EMPTY_CELL_MARKERS = {"", "-", "—", "–", "ー", "−"}
-PLACEHOLDER_WORDS = {"todo", "tbd", "wip", "?", "??", "...", "…", "xxx", "tba"}
-_UNRESOLVED_PREFIXES = ("todo", "tbd", "wip", "tba")
+try:
+    from .. import tableparse as tp
+except ImportError:  # standalone `python3 contract_gate/gates/testgen.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from contract_gate import tableparse as tp
+
+# Shared family-wide helpers (see tableparse.py). Local aliases keep the
+# historical names used throughout this module.
+EMPTY_CELL_MARKERS = tp.EMPTY_CELL_MARKERS
+PLACEHOLDER_WORDS = tp.PLACEHOLDER_WORDS
+_norm = tp.norm
+_is_empty_cell = tp.is_empty_cell
+_looks_like_table_row = tp.looks_like_table_row
+_split_row = tp.split_row
+_is_separator_row = tp.is_separator_row
+_find_col = tp.find_col
 
 # Header-detection needles (lowercase substrings, EN/VN).
 REQ_NEEDLES = (
@@ -120,75 +143,34 @@ EXPECTED_NEEDLES = (
 TESTID_NEEDLES = ("test id", "test case", "tc id", "case id", "mã ca", "ma ca")
 TECHNIQUE_NEEDLES = ("technique", "kỹ thuật", "ky thuat", "method")
 
-# Optional delimiter — when present, only the enclosed block is scanned.
+# Optional delimiter — when present, only the enclosed block(s) are scanned
+# (EVERY start..end pair, not just the first — tableparse.extract_scope).
 START = "<!-- testgen:start -->"
 END = "<!-- testgen:end -->"
 
 
-def _norm(cell: str) -> str:
-    return cell.strip()
-
-
-def _is_empty_cell(cell: str) -> bool:
-    n = _norm(cell)
-    if n in EMPTY_CELL_MARKERS:
-        return True
-    low = n.lower()
-    if low in PLACEHOLDER_WORDS:
-        return True
-    if n.startswith("?"):
-        return True
-    for w in _UNRESOLVED_PREFIXES:
-        if low == w or low.startswith(w + " ") or low.startswith(w + ":") or low.startswith(w + "-"):
-            return True
-    return False
-
-
-def _looks_like_table_row(line: str) -> bool:
-    s = line.strip()
-    return s.startswith("|") and s.count("|") >= 2
-
-
-def _split_row(line: str) -> list[str]:
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-def _is_separator_row(cells: list[str]) -> bool:
-    if not cells:
-        return False
-    saw_dash = False
-    for c in cells:
-        c2 = c.strip()
-        if not c2:
-            continue
-        if not set(c2) <= set("-: "):
-            return False
-        if "-" in c2:
-            saw_dash = True
-    return saw_dash
-
-
-def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
-    for i, cell in enumerate(header_cells):
-        low = cell.lower()
-        if any(needle in low for needle in needles):
-            return i
-    return None
-
-
-def _extract_scope(text: str) -> str:
-    i = text.find(START)
-    if i < 0:
-        return text
-    j = text.find(END, i + len(START))
-    if j < 0:
-        return text[i + len(START):]
-    return text[i + len(START):j]
+def _resolve_header(cells: list[str]) -> dict | None:
+    """RTM-02: qualify iff the header has a Requirement/Behavior column AND
+    a DISTINCT Expected/Oracle column. Resolution order req -> expected ->
+    test-id -> technique, each excluding already-claimed indices (GOLD-06
+    guard) — a lone 'Expected behavior' cell can no longer satisfy both."""
+    req_col = _find_col(cells, REQ_NEEDLES)
+    if req_col is None:
+        return None
+    claimed = frozenset({req_col})
+    expected_col = _find_col(cells, EXPECTED_NEEDLES, exclude=claimed)
+    if expected_col is None:
+        return None
+    claimed = claimed | {expected_col}
+    testid_col = _find_col(cells, TESTID_NEEDLES, exclude=claimed)
+    if testid_col is not None:
+        claimed = claimed | {testid_col}
+    return {
+        "req_col": req_col,
+        "expected_col": expected_col,
+        "testid_col": testid_col,
+        "technique_col": _find_col(cells, TECHNIQUE_NEEDLES, exclude=claimed),
+    }
 
 
 def _row_label(cells: list[str], testid_col: int | None, req_col: int | None, idx: int) -> str:
@@ -203,52 +185,32 @@ def _row_label(cells: list[str], testid_col: int | None, req_col: int | None, id
     return f"row {idx}"
 
 
-def _skip_table_body(lines: list[str], start: int, n: int) -> int:
-    k = start
-    while k < n and _looks_like_table_row(lines[k]):
-        k += 1
-    return k
-
-
 def _analyze(text: str) -> tuple[list[str], str]:
     """Single linear pass backing both evaluate() (fail-fast) and findings()
     (collect-all). Returns (findings, summary): non-empty findings = fail."""
     if not text or not text.strip():
         return ["RTM file empty"], ""
 
-    lines = _extract_scope(text).splitlines()
-    n = len(lines)
+    lines = tp.extract_scope(text, START, END).splitlines()
+    tables = tp.iter_tables(lines, _resolve_header)
+
+    if not tables:
+        return [
+            "no RTM table found (cần bảng có cột Requirement/Behavior + Expected/Oracle — RTM-02)"
+        ], ""
 
     fs: list[str] = []
-    qualifying_tables = 0
     rows_total = 0
-
-    i = 0
-    while i < n:
-        if not _looks_like_table_row(lines[i]):
-            i += 1
-            continue
-        header_cells = _split_row(lines[i])
-        if _is_separator_row(header_cells):
-            i += 1
-            continue
-
-        req_col = _find_col(header_cells, REQ_NEEDLES)
-        expected_col = _find_col(header_cells, EXPECTED_NEEDLES)
-        if req_col is None or expected_col is None:
-            i = _skip_table_body(lines, i + 1, n)
-            continue
-
-        qualifying_tables += 1
-        testid_col = _find_col(header_cells, TESTID_NEEDLES)
-        technique_col = _find_col(header_cells, TECHNIQUE_NEEDLES)
-
-        j = i + 1
-        if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-            j += 1
+    for t_idx, table in enumerate(tables):
+        req_col = table["req_col"]
+        expected_col = table["expected_col"]
+        testid_col = table["testid_col"]
+        technique_col = table["technique_col"]
+        table_label = tp.nearest_heading(lines, table["header_idx"]) or f"table {t_idx + 1}"
 
         row_idx = 0
-        while j < n and _looks_like_table_row(lines[j]):
+        j = table["row_start"]
+        while j < table["row_end"]:
             cells = _split_row(lines[j])
             if _is_separator_row(cells):
                 j += 1
@@ -285,14 +247,11 @@ def _analyze(text: str) -> tuple[list[str], str]:
 
             j += 1
 
-        i = j
+        if row_idx == 0:
+            # RTM-03.4: a header-only RTM is an ungraded claim, not a pass.
+            fs.append(f"{table_label} has an RTM table header but no rows")
 
-    if qualifying_tables == 0:
-        return [
-            "no RTM table found (cần bảng có cột Requirement/Behavior + Expected/Oracle — RTM-02)"
-        ], ""
-
-    summary = f"{rows_total} test case(s) traced with a real oracle across {qualifying_tables} table(s)"
+    summary = f"{rows_total} test case(s) traced with a real oracle across {len(tables)} table(s)"
     return fs, summary
 
 
@@ -320,15 +279,16 @@ GLOBS = ("*.testgen.md", "*RTM*.md", "*.rtm.md")
 
 def contains_rtm_table(text: str) -> bool:
     """True iff `text` has at least one qualifying table (header with BOTH a
-    Requirement/Behavior and an Expected/Oracle column) — lets the CLI skip
-    files that merely share a generic name but hold a different contract."""
-    for line in _extract_scope(text).splitlines():
+    Requirement/Behavior and a DISTINCT Expected/Oracle column) — lets the
+    CLI skip files that merely share a generic name but hold a different
+    contract. Uses the SAME header resolver as grading (no drift)."""
+    for line in tp.extract_scope(text, START, END).splitlines():
         if not _looks_like_table_row(line):
             continue
         cells = _split_row(line)
         if _is_separator_row(cells):
             continue
-        if _find_col(cells, REQ_NEEDLES) is not None and _find_col(cells, EXPECTED_NEEDLES) is not None:
+        if _resolve_header(cells) is not None:
             return True
     return False
 
