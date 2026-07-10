@@ -112,7 +112,7 @@ class ManifestGateCLITests(unittest.TestCase):
         third-party (D-01) -- redundant with the shell acceptance check but
         keeps the prohibition enforced in the test suite itself."""
         src = GATE.read_text(encoding="utf-8")
-        stdlib_ok_prefixes = ("import argparse", "import sys", "import re", "from pathlib", "from __future__")
+        stdlib_ok_prefixes = ("import argparse", "import sys", "import re", "from pathlib", "from __future__", "from .. import tableparse", "from contract_gate import tableparse")
         import_lines = [
             line.strip()
             for line in src.splitlines()
@@ -128,6 +128,81 @@ class ManifestGateCLITests(unittest.TestCase):
 class ManifestGateParserUnitTests(unittest.TestCase):
     """Exercise evaluate_manifest() directly (no subprocess) -- fast, precise,
     used for the perf/ReDoS guard and small parser edge cases."""
+
+    def test_fail_placeholder_observable(self):
+        """F2 regression (2026-07-11): an Observable of `TODO`/`?` is an
+        UNFILLED cell, not a pass — before the shared empty-cell rule this
+        gate only checked dash look-alikes and both PASSED (false PASS)."""
+        for bad in ("TODO", "?", "TBD", "? not sure yet", "TODO: ask BE"):
+            text = (
+                "| # | Behavior | Observable |\n"
+                "|--|--|--|\n"
+                f"| 1 | click X | {bad} |\n"
+            )
+            ok, reason = manifest_gate.evaluate_manifest(text)
+            self.assertFalse(ok, msg=f"placeholder {bad!r} passed: {reason}")
+            self.assertIn("empty Observable", reason)
+
+    def test_fail_abutting_table_graded_with_own_columns(self):
+        """F4 regression (2026-07-11): a second table glued directly under
+        the first (no blank line), with a DIFFERENT column order, used to be
+        consumed as body rows of table 1 and graded under table 1's column
+        indices — its empty Observable was invisible (false PASS)."""
+        text = (
+            "| # | Behavior | Observable |\n"
+            "|--|--|--|\n"
+            "| 1 | x | dom check |\n"
+            "| # | Observable | Behavior |\n"
+            "|--|--|--|\n"
+            "| 2 | - | click y |\n"
+        )
+        ok, reason = manifest_gate.evaluate_manifest(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("empty Observable", reason)
+
+    def test_fail_abutting_table_after_non_qualifying_table(self):
+        """F4 regression, other order: a qualifying table glued under a
+        NON-qualifying one must still be found and graded."""
+        text = (
+            "| Note | Comment |\n"
+            "|--|--|\n"
+            "| a | b |\n"
+            "| # | Behavior | Observable |\n"
+            "|--|--|--|\n"
+            "| 1 | x |  |\n"
+        )
+        ok, reason = manifest_gate.evaluate_manifest(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("empty Observable", reason)
+
+    def test_fail_header_only_table_in_multi_table_file(self):
+        """F7: a header-only table (0 rows) among filled ones is an ungraded
+        claim — it must fail, naming the empty table."""
+        text = (
+            "## Page 1\n"
+            "| # | Behavior | Observable |\n"
+            "|--|--|--|\n"
+            "| 1 | x | dom check |\n"
+            "\n"
+            "## Page 2\n"
+            "| # | Behavior | Observable |\n"
+            "|--|--|--|\n"
+        )
+        ok, reason = manifest_gate.evaluate_manifest(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("Page 2", reason)
+        self.assertIn("no rows", reason)
+
+    def test_pass_escaped_pipe_in_cell(self):
+        """F6: `\\|` is one cell's content, not a column break — before the
+        shared split_row an escaped pipe shifted every later column."""
+        text = (
+            "| # | Behavior | Observable |\n"
+            "|--|--|--|\n"
+            "| 1 | toggle a \\| b | shows a or b |\n"
+        )
+        ok, reason = manifest_gate.evaluate_manifest(text)
+        self.assertTrue(ok, msg=reason)
 
     def test_perf_large_input_is_linear_and_fast(self):
         header = "| # | Hành vi | Loại | Observable (oracle để verify) | Đã port? |\n"

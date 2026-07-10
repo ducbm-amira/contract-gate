@@ -123,7 +123,7 @@ class TestgenGateCLITests(unittest.TestCase):
         """Grep-level confirmation that testgen.py imports nothing third-
         party — NO LLM client, NO network (RTM-01)."""
         src = GATE.read_text(encoding="utf-8")
-        stdlib_ok_prefixes = ("import argparse", "import sys", "from pathlib", "from __future__")
+        stdlib_ok_prefixes = ("import argparse", "import sys", "from pathlib", "from __future__", "from .. import tableparse", "from contract_gate import tableparse")
         import_lines = [
             line.strip()
             for line in src.splitlines()

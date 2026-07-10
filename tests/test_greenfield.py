@@ -208,7 +208,7 @@ class GreenfieldGateCLITests(unittest.TestCase):
         third-party (D-05) -- redundant with the shell acceptance check but
         keeps the prohibition enforced in the test suite itself."""
         src = GATE.read_text(encoding="utf-8")
-        stdlib_ok_prefixes = ("import argparse", "import sys", "from pathlib", "from __future__")
+        stdlib_ok_prefixes = ("import argparse", "import sys", "from pathlib", "from __future__", "from .. import tableparse", "from contract_gate import tableparse")
         import_lines = [
             line.strip()
             for line in src.splitlines()
@@ -256,6 +256,76 @@ class GreenfieldGateParserUnitTests(unittest.TestCase):
     def test_empty_string_fails(self):
         ok, _reason = greenfield_gate.evaluate_spec("")
         self.assertFalse(ok)
+
+    def test_fail_placeholder_observable(self):
+        """F2 regression (2026-07-11): an Observable of `?`/`TODO: ...` is an
+        UNFILLED cell — both used to PASS (false PASS) because this gate only
+        checked dash look-alikes before adopting the shared empty-cell rule."""
+        for bad in ("?", "TODO", "TODO: write assertion", "? not sure"):
+            text = (
+                "| # | Behavior | Design-ref | Observable |\n"
+                "|--|--|--|--|\n"
+                f"| 1 | b | https://claude.ai/design/h/abc | {bad} |\n"
+            )
+            ok, reason = greenfield_gate.evaluate_spec(text)
+            self.assertFalse(ok, msg=f"placeholder {bad!r} passed: {reason}")
+            self.assertIn("empty Observable", reason)
+
+    def test_fail_placeholder_restated(self):
+        """F2/D-06 regression: a non-🟢 row whose Restated cell is `?` used
+        to pass D-06 — a `?` rubber-stamp defeats the cognitive-forcing
+        function D-06 exists for."""
+        text = (
+            "| # | Behavior | Design-ref | Observable | Confidence | Restated |\n"
+            "|--|--|--|--|--|--|\n"
+            "| 1 | b | https://claude.ai/design/h/abc | cell shows X | 🟡 | ? |\n"
+        )
+        ok, reason = greenfield_gate.evaluate_spec(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("empty Restated", reason)
+
+    def test_fail_design_observable_needle_collision(self):
+        """F3 regression (GOLD-06 class, 2026-07-11): a single header cell
+        matching BOTH needle sets ("Design & Observable assertion") used to
+        resolve Design-ref and Observable to the SAME column — one filled
+        cell satisfied both oracle layers (false PASS). With the exclusion
+        guard such a table no longer qualifies -> loud 'no behavior table'."""
+        text = (
+            "| # | Behavior | Design & Observable assertion |\n"
+            "|--|--|--|\n"
+            "| 1 | b | https://claude.ai/design/h/abc |\n"
+        )
+        self.assertFalse(greenfield_gate.applies(text))
+        ok, reason = greenfield_gate.evaluate_spec(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no behavior table", reason)
+
+    def test_fail_abutting_table_graded_with_own_columns(self):
+        """F4 regression: a second qualifying table glued directly under the
+        first (no blank line), with a different column order, must be graded
+        under its OWN columns — its violations used to be invisible or
+        misattributed."""
+        text = (
+            "| # | Behavior | Design-ref | Observable |\n"
+            "|--|--|--|--|\n"
+            "| 1 | x | https://claude.ai/design/h/a | dom check |\n"
+            "| # | Observable | Design-ref | Behavior |\n"
+            "|--|--|--|--|\n"
+            "| 2 | - | https://claude.ai/design/h/b | click y |\n"
+        )
+        ok, reason = greenfield_gate.evaluate_spec(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("empty Observable", reason)
+
+    def test_fail_header_only_table(self):
+        """F7: a header-only qualifying table (0 rows) fails, naming it."""
+        text = (
+            "| # | Behavior | Design-ref | Observable |\n"
+            "|--|--|--|--|\n"
+        )
+        ok, reason = greenfield_gate.evaluate_spec(text)
+        self.assertFalse(ok, msg=reason)
+        self.assertIn("no rows", reason)
 
 
 if __name__ == "__main__":

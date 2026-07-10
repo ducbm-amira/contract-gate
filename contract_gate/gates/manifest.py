@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Port manifest gate — P1→P3 hard block (PORT-02, plan 02-01).
 
-D-01 (stdlib-only): imports below are limited to argparse/sys/pathlib. NO
+D-01 (stdlib-only): imports below are limited to argparse/sys/pathlib plus
+the sibling `contract_gate.tableparse` module (also stdlib-only). NO
 third-party package, NO .venv/pip install — this must run under a bare
 `python3` with zero setup. Do not add a third-party import here.
 
@@ -16,9 +17,15 @@ D-04 (pass condition): a manifest passes iff, in order:
   1. the file exists and is non-empty after strip (D-04.1),
   2. its behavior table parses — a markdown pipe table whose header row has
      a column recognizable as "Observable" (D-04.2),
-  3. every behavior/body row in that table has a non-empty Observable cell;
-     whitespace-only or a lone "-"/"ー"/"−" counts as empty (D-04.3, names
-     the offending row in the failure reason).
+  3. every behavior/body row in that table has a non-empty, non-placeholder
+     Observable cell (D-04.3, names the offending row in the failure
+     reason). "Unfilled" is the family-wide `tableparse.is_empty_cell` rule:
+     whitespace/dash look-alikes AND placeholder tokens (?/TODO/TBD/WIP/…,
+     a leading `?`, a whole-cell `<scaffold>`). Before 2026-07-11 this gate
+     only checked dash look-alikes, so an Observable of literally `TODO` or
+     `?` PASSED — a false PASS, fixed by adopting the shared rule;
+  4. every qualifying table has at least one body row — a header-only table
+     ("I'll fill page 3 later") is an ungraded claim, not a pass.
 
 D-05 (format-forgiving parser): the Observable column is located by a
 case-insensitive substring match against the header cell — either the
@@ -41,31 +48,22 @@ Characterization test từ manifest"), not this gate. This comment is the
 record that D-06 was decided, not silently dropped.
 
 T-02-01 (DoS mitigation): the parser is a linear, line-by-line scan using
-only str.split("|") — no regex, hence no catastrophic-backtracking surface.
-A >=5000-row / pathological input completes in well under 1s.
+only split-based cell parsing — no regex, hence no catastrophic-backtracking
+surface. A >=5000-row / pathological input completes in well under 1s.
 
-D-07 (multi-table files — loop, don't stop at the first; ported from the
-identical fix in greenfield.py, same original bug): a manifest file may
-hold MORE THAN ONE behavior table — e.g. one master manifest covering
-several legacy pages/components being ported together, one table per
-`## Page` section. Before this fix the gate located only the FIRST table
-with an Observable column, graded its rows, and silently stopped: an
-empty Observable in a LATER table was never seen and the file still
-reported `pass` (reproduced 2026-07-09: a 2-page demo manifest with page
-2's Observable left blank reported "pass 1 behavior row(s) verified",
-counting only page 1's row — a false PASS). Fixed: `_iter_tables()` scans
-the WHOLE file and returns every table it finds, in order, each with its
-own resolved Observable/Behavior column indices (tables need not share a
-layout) and its own [row_start, row_end) line range. evaluate_manifest
-still fails fast (stops at the first violation, across tables in file
-order); findings() collects violations from ALL tables for `check --all`.
-A table's failure reason is prefixed by the nearest preceding markdown
-heading (e.g. "Page 2: /detail"), or `table N` (1-based discovery order)
-when no heading precedes it.
+D-07 (multi-table files — loop, don't stop at the first): a manifest file
+may hold MORE THAN ONE behavior table. All tables are graded; parsing is
+delegated to `tableparse.iter_tables`, which ALSO handles tables abutting
+each other with no blank line in between (the residue of the original D-07
+bug: the old scanner consumed an abutting table's header+rows as body rows
+of the previous table and graded them under the wrong column indices — a
+demonstrated false PASS, fixed 2026-07-11). A table's failure reason is
+prefixed by the nearest preceding markdown heading (e.g. "Page 2: /detail"),
+or `table N` (1-based discovery order) when no heading precedes it.
 
 Usage:
-    python3 manifest_gate.py --manifest <path/to/route.manifest.md>
-    python3 manifest_gate.py --repo <sdd-repo> --route <route>
+    python3 -m contract_gate.gates.manifest --manifest <path/to/route.manifest.md>
+    python3 -m contract_gate.gates.manifest --repo <sdd-repo> --route <route>
         (resolves to <sdd-repo>/.port/<route>.manifest.md)
 Exactly one of the two forms is required.
 """
@@ -75,136 +73,60 @@ import argparse
 import sys
 from pathlib import Path
 
-# Whitespace-only (after strip -> "") or a lone dash/prolonged-sound-mark/minus
-# counts as an empty Observable cell (D-04.3). Superset of the three literal
-# markers named in the plan ("-", "ー", "−") plus common dash look-alikes.
-EMPTY_OBSERVABLE_MARKERS = {"", "-", "—", "–", "ー", "−"}
+try:
+    from .. import tableparse as tp
+except ImportError:  # standalone `python3 contract_gate/gates/manifest.py`
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from contract_gate import tableparse as tp
 
-
-def _norm(cell: str) -> str:
-    return cell.strip()
-
-
-def _is_empty_observable(cell: str) -> bool:
-    return _norm(cell) in EMPTY_OBSERVABLE_MARKERS
-
-
-def _looks_like_table_row(line: str) -> bool:
-    s = line.strip()
-    return s.startswith("|") and s.count("|") >= 2
-
-
-def _split_row(line: str) -> list[str]:
-    """Split a markdown pipe-table row into raw cells (format-forgiving:
-    leading/trailing pipe optional, no whitespace/column-count validation)."""
-    s = line.strip()
-    if s.startswith("|"):
-        s = s[1:]
-    if s.endswith("|"):
-        s = s[:-1]
-    return [c.strip() for c in s.split("|")]
-
-
-def _is_separator_row(cells: list[str]) -> bool:
-    """The markdown alignment row, e.g. `|---|:---:|---|` — every non-blank
-    cell contains only '-', ':', or whitespace."""
-    if not cells:
-        return False
-    saw_dash = False
-    for c in cells:
-        c2 = c.strip()
-        if not c2:
-            continue
-        if not set(c2) <= set("-: "):
-            return False
-        if "-" in c2:
-            saw_dash = True
-    return saw_dash
-
-
-def _find_col(header_cells: list[str], needles: tuple[str, ...]) -> int | None:
-    for i, cell in enumerate(header_cells):
-        low = cell.lower()
-        if any(needle in low for needle in needles):
-            return i
-    return None
-
+# Shared family-wide helpers (see tableparse.py). Local aliases keep the
+# historical names used throughout this module.
+EMPTY_OBSERVABLE_MARKERS = tp.EMPTY_CELL_MARKERS
+_norm = tp.norm
+_is_empty_observable = tp.is_empty_cell
+_looks_like_table_row = tp.looks_like_table_row
+_split_row = tp.split_row
+_is_separator_row = tp.is_separator_row
+_find_col = tp.find_col
+_nearest_heading = tp.nearest_heading
 
 OBSERVABLE_NEEDLES = ("observable", "oracle")
 BEHAVIOR_NEEDLES = ("hành vi", "behavior")
 
 
-def _nearest_heading(lines: list[str], idx: int) -> str | None:
-    """D-07: label a table by the nearest preceding markdown heading
-    (`#`.."######" + text) above line `idx`, stripped of the leading `#`s
-    -- gives readable per-table failure reasons in a multi-page master
-    manifest (e.g. "Page 2: /detail"). None if nothing precedes it."""
-    i = idx - 1
-    while i >= 0:
-        s = lines[i].strip()
-        if s.startswith("#"):
-            return s.lstrip("#").strip()
-        i -= 1
-    return None
+def _resolve_header(cells: list[str]) -> dict | None:
+    """A manifest table qualifies iff its header has an Observable column."""
+    col = _find_col(cells, OBSERVABLE_NEEDLES)
+    if col is None:
+        return None
+    return {
+        "obs_col": col,
+        "behavior_col": _find_col(cells, BEHAVIOR_NEEDLES, exclude=frozenset({col})),
+    }
 
 
 def _iter_tables(lines: list[str]) -> list[dict]:
-    """D-07: locate EVERY behavior table in the file, not just the first.
-    Each descriptor carries its own resolved Observable/Behavior column
-    indices (tables need not share a layout) plus the [row_start, row_end)
-    line range of its body rows. Linear single pass (T-02-01 preserved):
-    once a table's body is found, the scan jumps straight past it."""
-    n = len(lines)
-    tables: list[dict] = []
-    i = 0
-    while i < n:
-        line = lines[i]
-        if _looks_like_table_row(line):
-            cells = _split_row(line)
-            if not _is_separator_row(cells):
-                col = _find_col(cells, OBSERVABLE_NEEDLES)
-                if col is not None:
-                    header_idx = i
-                    header_cells = cells
-                    j = header_idx + 1
-                    if j < n and _looks_like_table_row(lines[j]) and _is_separator_row(_split_row(lines[j])):
-                        j += 1
-                    row_start = j
-                    while j < n and _looks_like_table_row(lines[j]):
-                        j += 1
-                    tables.append(
-                        {
-                            "label": _nearest_heading(lines, header_idx) or f"table {len(tables) + 1}",
-                            "obs_col": col,
-                            "behavior_col": _find_col(header_cells, BEHAVIOR_NEEDLES),
-                            "row_start": row_start,
-                            "row_end": j,
-                        }
-                    )
-                    i = j
-                    continue
-        i += 1
+    """D-07: every behavior table in the file (abutting-table safe), each
+    labeled by its nearest preceding heading."""
+    tables = tp.iter_tables(lines, _resolve_header)
+    for k, table in enumerate(tables):
+        table["label"] = _nearest_heading(lines, table["header_idx"]) or f"table {k + 1}"
     return tables
 
 
-def evaluate_manifest(text: str) -> tuple[bool, str]:
-    """Core D-04 verdict over manifest text. Returns (ok, reason).
-
-    Grades EVERY behavior table in the file (D-07), not just the first —
-    fails fast at the first violation found in file order, across tables.
-    `reason` is a short one-line human-readable summary: on success a pass
-    summary, on failure the block reason (D-03) naming the offending table
-    + row. Linear parse (T-02-01) — no regex, single pass over lines.
-    """
+def _analyze(text: str) -> tuple[list[str], str]:
+    """Single linear pass backing evaluate_manifest (fail-fast via first
+    finding) and findings (collect-all). Returns (findings, summary)."""
     if not text or not text.strip():
-        return False, "manifest empty"
+        return ["manifest empty"], ""
 
     lines = text.splitlines()
     tables = _iter_tables(lines)
 
     if not tables:
-        return False, "no behavior table with a resolvable Observable column found"
+        return ["no behavior table with a resolvable Observable column found"], ""
 
+    out: list[str] = []
     total_rows = 0
     for table in tables:
         obs_col = table["obs_col"]
@@ -224,15 +146,27 @@ def evaluate_manifest(text: str) -> tuple[bool, str]:
                     label = cells[behavior_col]
                 else:
                     label = cells[0] if cells else "?"
-                return False, f'{table["label"]} row {table_row_count} ("{label}") has empty Observable'
+                out.append(f'{table["label"]} row {table_row_count} ("{label}") has empty Observable')
             j += 1
+        if table_row_count == 0:
+            # D-04.4: a header-only table is an ungraded claim, not a pass.
+            out.append(f'{table["label"]} has a behavior table header but no rows')
 
-    if total_rows == 0:
-        return False, "behavior table has no rows"
+    if total_rows == 0 and not out:
+        return ["behavior table has no rows"], ""
 
     if len(tables) == 1:
-        return True, f"{total_rows} behavior row(s) verified"
-    return True, f"{total_rows} behavior row(s) verified across {len(tables)} table(s)"
+        return out, f"{total_rows} behavior row(s) verified"
+    return out, f"{total_rows} behavior row(s) verified across {len(tables)} table(s)"
+
+
+def evaluate_manifest(text: str) -> tuple[bool, str]:
+    """Core D-04 verdict over manifest text. Returns (ok, reason) — the
+    FIRST violation in file order, or a pass summary."""
+    fs, summary = _analyze(text)
+    if fs:
+        return False, fs[0]
+    return True, summary
 
 
 # --------------------------------------------------------------------------
@@ -271,39 +205,7 @@ def findings(text: str, path: Path | None = None) -> list[str]:
     file (D-07) — one finding per row with an empty Observable, prefixed
     with that row's table label. Mirrors evaluate_manifest. Backs
     `check --all`."""
-    if not text or not text.strip():
-        return ["manifest empty"]
-    lines = text.splitlines()
-    tables = _iter_tables(lines)
-    if not tables:
-        return ["no behavior table with a resolvable Observable column found"]
-
-    out: list[str] = []
-    total_rows = 0
-    for table in tables:
-        obs_col = table["obs_col"]
-        behavior_col = table["behavior_col"]
-        table_row_count = 0
-        j = table["row_start"]
-        while j < table["row_end"]:
-            cells = _split_row(lines[j])
-            if _is_separator_row(cells):
-                j += 1
-                continue
-            table_row_count += 1
-            total_rows += 1
-            observable_cell = cells[obs_col] if obs_col < len(cells) else ""
-            if _is_empty_observable(observable_cell):
-                if behavior_col is not None and behavior_col < len(cells):
-                    label = cells[behavior_col]
-                else:
-                    label = cells[0] if cells else "?"
-                out.append(f'{table["label"]} row {table_row_count} ("{label}") has empty Observable')
-            j += 1
-
-    if total_rows == 0:
-        return ["behavior table has no rows"]
-    return out
+    return _analyze(text)[0]
 
 
 DRAFT_GUIDANCE = """\
