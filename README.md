@@ -102,14 +102,21 @@ all up front instead of one resolve-recheck cycle at a time.
 | **`golden-record`** | For a real record with a known answer, does the real running app's Actual value match the real DB/API's Expected value? | ✅ shipped |
 | **`fidelity`** | Does every screen pinned in a fidelity contract have an already-run [`design-fidelity-gate`](https://github.com/ducbm-amira/design-fidelity-gate) bucketed report whose `overall` verdict is PASS? | ✅ shipped |
 | **`testgen`** | Does every RTM row trace to a Requirement/Behavior and carry a real (or honestly-`?`) Expected/Oracle? | ✅ shipped |
+| **`port-const`** | For a ported constant/enum/dropdown list, does the built repo's literal VALUE set match the source repo's, exactly? | ✅ shipped (advisory) |
 
 `data-binding`/`greenfield`/`manifest` gate that a contract is *declared*
-before code is written. `golden-record` and `fidelity` are a different kind
-of gate: they verify a declared contract is *actually correct/matching*
-against reality. `golden-record` checks one real record, queried straight
-from the DB/API (Expected), against what the real running app displays for
-it (Actual). `fidelity` checks that a screen's build actually matches its
-design — but delegates the pixel/token comparison itself to
+before code is written. `golden-record`, `fidelity`, and `port-const` are a
+different kind of gate: they verify a declared contract is *actually
+correct/matching* against reality. `golden-record` checks one real record,
+queried straight from the DB/API (Expected), against what the real running
+app displays for it (Actual). `port-const` checks a PORTED constant/enum/
+dropdown list's literal VALUES in the built repo against the same
+identifier's literal values in the source repo — the layer none of the
+other gates reach: a source can be correctly *declared* (data-binding) and
+a single record can *match* (golden-record) while an entire dropdown still
+silently lost 10 options during the port. `fidelity` checks that a screen's
+build actually matches its design — but delegates the pixel/token
+comparison itself to
 `design-fidelity-gate` (a separate tool with its own Playwright/pixelmatch/
 coloraide dependency stack); this gate only grades the bucketed report JSON
 that tool already wrote, the same way `golden-record` only grades values a
