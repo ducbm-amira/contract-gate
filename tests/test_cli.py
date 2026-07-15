@@ -180,6 +180,7 @@ class InitTests(unittest.TestCase):
                 "example.data-binding.md", "example.greenfield.md",
                 "example.manifest.md", "example.golden-record.md",
                 "example.fidelity.md", "example.testgen.md",
+                "example.port-const.md",
             }
             self.assertEqual(
                 {p.name for p in Path(d).iterdir()}, expected_names
@@ -192,7 +193,8 @@ class InitTests(unittest.TestCase):
             graded_gates = {x["gate"] for x in payload["results"]}
             self.assertEqual(
                 graded_gates,
-                {"data-binding", "greenfield", "manifest", "golden-record", "fidelity", "testgen"},
+                {"data-binding", "greenfield", "manifest", "golden-record", "fidelity",
+                 "testgen", "port-const"},
             )
             self.assertTrue(all(not x["pass"] for x in payload["results"]),
                             msg=f"a placeholder scaffold passed: {payload['results']}")
